@@ -22,6 +22,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import ViewListIcon from '@mui/icons-material/ViewList';
 import GridViewIcon from '@mui/icons-material/GridView';
 
+import ErrorBoundary from '../components/common/ErrorBoundary';
 import NoteCard from '../components/notes/NoteCard';
 import ColorPicker from '../components/common/ColorPicker';
 import ColorFilterDialog from '../components/common/ColorFilterDialog';
@@ -132,16 +133,11 @@ export default function HomeScreen() {
 
   // Grow the batch as the user scrolls near the bottom.
   //
-  // `columns` is deliberately in the dependency array even though it's not
-  // used inside the callback: switching between list view (1 column, a
-  // Fragment) and grid view (>1 column, a Box) is a different JSX element
-  // type at that position, so React fully unmounts/remounts the notes +
-  // sentinel subtree on every view change. Without `columns` here, this
-  // effect wouldn't re-run when that happens, and the observer would be
-  // left watching the now-detached old sentinel node forever — which is
-  // exactly the "switch grid view, scroll down, nothing loads" bug: the
-  // observer was still alive, just watching a DOM node no longer in the
-  // page.
+  // `columns` is kept in the dependency array even though it's not used
+  // inside the callback, as defense-in-depth: if this effect ever needs to
+  // re-run on a view switch again, this makes sure it does. It's not load-
+  // bearing anymore though — see the note below on why list/grid both
+  // render a <Box> at this position now.
   useEffect(() => {
     const sentinel = sentinelRef.current;
     const root = scrollRef.current;
@@ -310,10 +306,28 @@ export default function HomeScreen() {
             <NotesIcon sx={{ fontSize: 64, opacity: 0.2, mb: 1 }} />
             <Typography>No notes yet. Tap + to add one.</Typography>
           </Box>
-        ) : columns === 1 ? (
+        ) : (
+        <ErrorBoundary resetKeys={[columns]}>
+        {columns === 1 ? (
           // Single column — the native packed-row list (cards flush against
           // each other, 1px gap), same as the mobile layout always was.
-          <>
+          //
+          // This is a <Box>, not a bare <> Fragment, and that's deliberate:
+          // list view and grid view render at this exact same JSX position,
+          // and until this was a matching element type in both branches,
+          // switching between them was a *type change* to React, which
+          // fully unmounted/remounted this entire notes+sentinel subtree on
+          // every view switch. That's what caused "switch to grid, scroll,
+          // and it snaps back to list view" — the remount reset scroll
+          // position and, combined with the batching/sentinel logic, made
+          // it look like the view itself had reverted. Keeping both
+          // branches as <Box> (only their props/children differ) means
+          // React just updates props on the same DOM node instead of
+          // tearing it down. `data-testid`/`data-view`/`data-columns` exist
+          // so the regression test in `__tests__/HomeScreen.gridview.test.jsx`
+          // can assert on this reliably (MUI's `sx` compiles to CSS classes,
+          // not inline styles, so a plain style-attribute selector doesn't work).
+          <Box data-testid="notes-container" data-view="list" data-columns={1}>
             {visibleNotes.map(note => (
               <NoteCard
                 key={note.id}
@@ -326,17 +340,33 @@ export default function HomeScreen() {
             {visibleCount < displayNotes.length && (
               <Box ref={sentinelRef} sx={{ height: 1 }} />
             )}
-          </>
+          </Box>
         ) : (
           // Multi-column grid (desktop only) — real gaps between cards
           // instead of the packed-row look, since that's what reads as a
           // "grid of notes" rather than a cramped list stretched wide.
-          <Box sx={{
-            display: 'grid',
-            gridTemplateColumns: `repeat(${columns}, 1fr)`,
-            gap: 1,
-            p: 1,
-          }}>
+          // Same element type (<Box>) as the list branch above — see the
+          // comment there for why that matters.
+          <Box
+            data-testid="notes-container"
+            data-view="grid"
+            data-columns={columns}
+            sx={{
+              display: 'grid',
+              // minmax(0, 1fr), not a bare 1fr: a plain 1fr track still won't
+              // shrink a column below the min-content width of what's inside
+              // it (e.g. a nowrap date, a long unbroken word/URL in a note).
+              // Once a card's content needed more room than an even split
+              // allowed, the grid stopped honoring equal columns and cards
+              // started overlapping/overflowing — that's the "layout breaks
+              // on switching grid view" symptom. minmax(0, 1fr) tells the
+              // grid it's allowed to shrink tracks to 0 before growing them,
+              // which is what makes equal-width columns actually hold.
+              gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+              gap: 1,
+              p: 1,
+            }}
+          >
             {visibleNotes.map(note => (
               <NoteCard
                 key={note.id}
@@ -350,6 +380,8 @@ export default function HomeScreen() {
               <Box ref={sentinelRef} sx={{ height: 1, gridColumn: '1 / -1' }} />
             )}
           </Box>
+        )}
+        </ErrorBoundary>
         )}
       </Box>
 

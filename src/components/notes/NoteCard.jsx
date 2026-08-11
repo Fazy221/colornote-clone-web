@@ -107,6 +107,7 @@ export default function NoteCard({ note, selected, onPress, onLongPress }) {
         px: 2,
         py: 1.25,
         minHeight: 64,
+        minWidth: 0, // don't let this card's own content force it wider than its grid column
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'center',
@@ -144,6 +145,7 @@ export default function NoteCard({ note, selected, onPress, onLongPress }) {
             fontSize: '0.95rem',
             lineHeight: 1.3,
             flex: 1,
+            minWidth: 0,
             wordBreak: 'break-word',
           }}
         >
