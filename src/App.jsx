@@ -23,13 +23,19 @@ export default function App() {
   // so both are ready no matter which screen mounts first.
   useEffect(() => { useColorStore.getState().loadColorSettings(); }, []);
 
-  // Same idea for the desktop grid-view default: start this IndexedDB read
-  // the instant the app boots rather than waiting for HomeScreen to mount.
-  // HomeScreen still calls initHomeGridColumns() itself too (it's a no-op
-  // once this has already run, or already-pending — see uiStore.js), this
-  // just makes the real-world window in which a fast click could land
-  // before the read resolves effectively zero instead of merely guarded.
+  // Desktop grid-view default — start reading before HomeScreen mounts.
   useEffect(() => { useUIStore.getState().initHomeGridColumns(); }, []);
+
+  // Restore persisted dark-mode preference on boot.
+  useEffect(() => {
+    import('./db/database').then(({ getSetting }) => {
+      getSetting('darkMode', false).then(saved => {
+        if (saved !== useUIStore.getState().darkMode) {
+          useUIStore.getState().toggleDarkMode();
+        }
+      });
+    });
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>

@@ -1,0 +1,13 @@
+{
+  "name": "ColorNote",
+  "short_name": "ColorNote",
+  "description": "Personal notes and diary",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#ffffff",
+  "theme_color": "#00BCD4",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

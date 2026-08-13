@@ -104,6 +104,9 @@ export default function ImportScreen() {
               <Typography variant="h6" sx={{ color: '#4CAF50', fontWeight: 500 }}>Import complete!</Typography>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'center' }}>
                 <Chip label={`${result?.imported} imported`} color="success" size="small" />
+                {result?.patched > 0 && (
+                  <Chip label={`${result?.patched} updated (calendar date)`} color="info" size="small" />
+                )}
                 {result?.skipped > 0 && (
                   <Chip label={`${result?.skipped} skipped (already exist)`} size="small" />
                 )}

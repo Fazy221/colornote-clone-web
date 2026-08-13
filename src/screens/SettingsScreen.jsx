@@ -12,12 +12,16 @@ import ViewModuleIcon from '@mui/icons-material/ViewModule';
 import ViewComfyIcon from '@mui/icons-material/ViewComfy';
 import ViewCompactIcon from '@mui/icons-material/ViewCompact';
 import { getSetting, setSetting } from '../db/database';
+import useUIStore from '../store/uiStore';
 
 export default function SettingsScreen() {
   const navigate = useNavigate();
   const [searchLockedContent, setSearchLockedContent] = useState(false);
   const [defaultDesktopView, setDefaultDesktopView] = useState(1);
   const [loaded, setLoaded] = useState(false);
+
+  const darkMode       = useUIStore(s => s.darkMode);
+  const toggleDarkMode = useUIStore(s => s.toggleDarkMode);
 
   useEffect(() => {
     (async () => {
@@ -27,15 +31,20 @@ export default function SettingsScreen() {
     })();
   }, []);
 
-  const handleToggle = async (checked) => {
-    setSearchLockedContent(checked); // optimistic — settings screen has no autosave delay
+  const handleSearchLocked = async (checked) => {
+    setSearchLockedContent(checked);
     await setSetting('searchLockedContent', checked);
   };
 
   const handleDesktopViewChange = async (_e, value) => {
-    if (value === null) return; // ignore re-clicking the already-selected option
+    if (value === null) return;
     setDefaultDesktopView(value);
     await setSetting('defaultDesktopView', value);
+  };
+
+  const handleDarkMode = async (checked) => {
+    toggleDarkMode();
+    await setSetting('darkMode', checked);
   };
 
   return (
@@ -50,14 +59,31 @@ export default function SettingsScreen() {
       </AppBar>
 
       <Box sx={{ flex: 1, overflowY: 'auto' }}>
+
+        {/* ── DISPLAY ─────────────────────────────────────────────────────── */}
         <Typography variant="caption" sx={{ display: 'block', px: 2, pt: 2, pb: 0.5, color: 'text.secondary' }}>
           DISPLAY
         </Typography>
         <List disablePadding sx={{ bgcolor: 'background.paper' }}>
+          {/* Dark mode */}
+          <ListItem sx={{ py: 1.5 }}>
+            <ListItemText
+              primary="Dark mode"
+              secondary="Switches the whole app to a dark colour scheme."
+              secondaryTypographyProps={{ sx: { mt: 0.5 } }}
+            />
+            <Switch
+              checked={darkMode}
+              onChange={e => handleDarkMode(e.target.checked)}
+            />
+          </ListItem>
+          <Divider component="li" />
+
+          {/* Default desktop columns */}
           <ListItem sx={{ py: 1.5, flexDirection: 'column', alignItems: 'stretch', gap: 1.5 }}>
             <ListItemText
               primary="Default desktop view"
-              secondary="How many columns of notes Home starts with on a wide (desktop-size) screen. Mobile always uses a single column, same as the original app. You can still switch views on the fly from Home — this just sets the starting point."
+              secondary="How many columns of notes Home starts with on a wide screen. Mobile always uses a single column. You can still switch on the fly from Home — this just sets the starting point."
               secondaryTypographyProps={{ sx: { mt: 0.5 } }}
             />
             <ToggleButtonGroup
@@ -68,15 +94,16 @@ export default function SettingsScreen() {
               size="small"
               sx={{ alignSelf: 'flex-start' }}
             >
-              <ToggleButton value={1} aria-label="1 column"><ViewListIcon fontSize="small" sx={{ mr: 0.5 }} />1</ToggleButton>
-              <ToggleButton value={2} aria-label="2 columns"><ViewCompactIcon fontSize="small" sx={{ mr: 0.5 }} />2</ToggleButton>
-              <ToggleButton value={3} aria-label="3 columns"><ViewModuleIcon fontSize="small" sx={{ mr: 0.5 }} />3</ToggleButton>
-              <ToggleButton value={4} aria-label="4 columns"><ViewComfyIcon fontSize="small" sx={{ mr: 0.5 }} />4</ToggleButton>
+              <ToggleButton value={1}><ViewListIcon fontSize="small" sx={{ mr: 0.5 }} />1</ToggleButton>
+              <ToggleButton value={2}><ViewCompactIcon fontSize="small" sx={{ mr: 0.5 }} />2</ToggleButton>
+              <ToggleButton value={3}><ViewModuleIcon fontSize="small" sx={{ mr: 0.5 }} />3</ToggleButton>
+              <ToggleButton value={4}><ViewComfyIcon fontSize="small" sx={{ mr: 0.5 }} />4</ToggleButton>
             </ToggleButtonGroup>
           </ListItem>
           <Divider component="li" />
         </List>
 
+        {/* ── PRIVACY ─────────────────────────────────────────────────────── */}
         <Typography variant="caption" sx={{ display: 'block', px: 2, pt: 2, pb: 0.5, color: 'text.secondary' }}>
           PRIVACY
         </Typography>
@@ -84,13 +111,13 @@ export default function SettingsScreen() {
           <ListItem sx={{ py: 1.5 }}>
             <ListItemText
               primary="Search inside locked notes"
-              secondary="Off by default. When on, a locked note can match a search by its content, not just its title — but the note list still never shows a preview of locked content, and you still need the password to open it."
+              secondary="When on, locked notes can match a search by their content — but the list never shows a preview of locked content, and you still need the password to open one."
               secondaryTypographyProps={{ sx: { mt: 0.5 } }}
             />
             <Switch
               checked={searchLockedContent}
               disabled={!loaded}
-              onChange={e => handleToggle(e.target.checked)}
+              onChange={e => handleSearchLocked(e.target.checked)}
             />
           </ListItem>
           <Divider component="li" />

@@ -31,11 +31,12 @@ export async function getNotesByState(state = 'normal') {
     .sortBy('modifiedAt');
 }
 
-// Helper: get notes for a specific calendar date
+// Helper: get notes for a specific calendar date (excludes trashed/archived)
 export async function getNotesByDate(dateStr) {
-  return db.notes
+  const notes = await db.notes
     .where('calendarDate').equals(dateStr)
     .toArray();
+  return notes.filter(n => n.state === 'normal');
 }
 
 // Helper: full-text search across title + note.

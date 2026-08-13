@@ -150,10 +150,26 @@ const useNoteStore = create((set, get) => ({
     // Filter out ColorNote system notes
     const realNotes = notes.filter(n => n.folderId !== 256);
 
-    // Deduplicate by uuid
+    // Split into new notes (add) vs. already-imported notes. For the latter,
+    // only patch calendarDate — re-importing shouldn't clobber anything the
+    // user has since edited in the app (title, note, color, state, etc.).
+    // This lets a corrected notes.json (e.g. after a parser fix) repair
+    // calendarDate on notes that are already in the DB.
     const existing = await db.notes.toArray();
-    const existingUuids = new Set(existing.map(n => n.uuid));
-    const toAdd = realNotes.filter(n => !existingUuids.has(n.id));
+    const existingByUuid = new Map(existing.map(n => [n.uuid, n]));
+
+    const toAdd = [];
+    const toPatch = [];
+
+    for (const n of realNotes) {
+      const match = existingByUuid.get(n.id);
+      const calendarDate = n.calendarDate ? formatCalendarDate(n.calendarDate) : null;
+      if (!match) {
+        toAdd.push(n);
+      } else if (calendarDate !== (match.calendarDate ?? null)) {
+        toPatch.push({ id: match.id, calendarDate });
+      }
+    }
 
     // Map from our parsed schema to DB schema
     const mapped = toAdd.map(n => ({
@@ -176,9 +192,21 @@ const useNoteStore = create((set, get) => ({
       modifiedAt: n.modifiedAt || Date.now(),
     }));
 
-    await db.notes.bulkAdd(mapped);
+    await db.transaction('rw', db.notes, async () => {
+      if (mapped.length) await db.notes.bulkAdd(mapped);
+      // Organizational patch, not a content edit — modifiedAt left untouched
+      // (same reasoning as trash/archive/pin above).
+      for (const { id, calendarDate } of toPatch) {
+        await db.notes.update(id, { calendarDate });
+      }
+    });
+
     await get().loadNotes('normal');
-    return { imported: mapped.length, skipped: realNotes.length - mapped.length };
+    return {
+      imported: mapped.length,
+      patched: toPatch.length,
+      skipped: realNotes.length - mapped.length - toPatch.length,
+    };
   },
 
   // ─── Get single note ───────────────────────────────────────────────────────

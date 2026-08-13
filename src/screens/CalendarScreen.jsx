@@ -45,10 +45,12 @@ export default function CalendarScreen() {
       .toArray()
       .then(notes => {
         const map = {};
-        notes.forEach(n => {
-          if (!map[n.calendarDate]) map[n.calendarDate] = [];
-          map[n.calendarDate].push(n.colorIndex ?? 0);
-        });
+        notes
+          .filter(n => n.state === 'normal')
+          .forEach(n => {
+            if (!map[n.calendarDate]) map[n.calendarDate] = [];
+            map[n.calendarDate].push(n.colorIndex ?? 0);
+          });
         setDotMap(map);
       });
   }, [year, month]);
@@ -56,7 +58,10 @@ export default function CalendarScreen() {
   // Load notes for selected date
   useEffect(() => {
     if (!selectedDate) { setNotesOnDate([]); return; }
-    db.notes.where('calendarDate').equals(selectedDate).toArray().then(setNotesOnDate);
+    db.notes
+      .where('calendarDate').equals(selectedDate)
+      .toArray()
+      .then(notes => setNotesOnDate(notes.filter(n => n.state === 'normal')));
   }, [selectedDate]);
 
   const prevMonth = () => {
