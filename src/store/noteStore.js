@@ -1,6 +1,7 @@
 import { create } from 'zustand';
-import { db, getNotesByState, searchNotes, getSetting, setSetting } from '../db/database';
+import { db, getNotesByState, searchNotes, getSetting } from '../db/database';
 import { formatCalendarDate } from '../utils/dateUtils';
+import { pushNote, pushNoteDeletion, syncSetting } from '../sync/notesSync';
 
 const useNoteStore = create((set, get) => ({
   notes: [],
@@ -43,6 +44,7 @@ const useNoteStore = create((set, get) => ({
       ...noteData,
     });
     await get().loadNotes('normal');
+    pushNote(await db.notes.get(id));
     return id;
   },
 
@@ -52,6 +54,7 @@ const useNoteStore = create((set, get) => ({
       modifiedAt: Date.now(),
     });
     await get().loadNotes(get().activeState);
+    pushNote(await db.notes.get(id));
   },
 
   // Move to trash — organizational, not a content edit, so modifiedAt is
@@ -60,24 +63,29 @@ const useNoteStore = create((set, get) => ({
   trashNote: async (id) => {
     await db.notes.update(id, { state: 'trash' });
     await get().loadNotes(get().activeState);
+    pushNote(await db.notes.get(id));
   },
 
   // Archive — same reasoning as trashNote.
   archiveNote: async (id) => {
     await db.notes.update(id, { state: 'archived' });
     await get().loadNotes(get().activeState);
+    pushNote(await db.notes.get(id));
   },
 
   // Restore from trash/archive → normal — same reasoning as trashNote.
   restoreNote: async (id) => {
     await db.notes.update(id, { state: 'normal' });
     await get().loadNotes(get().activeState);
+    pushNote(await db.notes.get(id));
   },
 
   // Permanently delete
   deleteNotePermanently: async (id) => {
+    const note = await db.notes.get(id);
     await db.notes.delete(id);
     await get().loadNotes(get().activeState);
+    if (note?.uuid) pushNoteDeletion(note.uuid);
   },
 
   // Duplicate
@@ -86,8 +94,9 @@ const useNoteStore = create((set, get) => ({
     if (!original) return;
     const { id: _id, uuid: _uuid, ...rest } = original;
     const now = Date.now();
-    await db.notes.add({ ...rest, uuid: crypto.randomUUID(), createdAt: now, modifiedAt: now });
+    const newId = await db.notes.add({ ...rest, uuid: crypto.randomUUID(), createdAt: now, modifiedAt: now });
     await get().loadNotes('normal');
+    pushNote(await db.notes.get(newId));
   },
 
   // Toggle pin/importance — organizational (just reordering, not editing
@@ -97,6 +106,7 @@ const useNoteStore = create((set, get) => ({
     if (!note) return;
     await db.notes.update(id, { importance: note.importance ? 0 : 1 });
     await get().loadNotes(get().activeState);
+    pushNote(await db.notes.get(id));
   },
 
   // ─── Bulk ops (multi-select action bar) ────────────────────────────────────
@@ -110,28 +120,35 @@ const useNoteStore = create((set, get) => ({
   // wasn't part of what's confirmed about the real app's behavior, so it's
   // treated as a content-ish edit rather than assumed. Flag if that should
   // change too.
+  //
+  // Each helper re-reads the affected rows after modify() and pushes them
+  // individually — modify() itself doesn't hand back the updated docs.
   archiveNotes: async (ids) => {
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ state: 'archived' });
     await get().loadNotes(get().activeState);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
   },
 
   trashNotes: async (ids) => {
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ state: 'trash' });
     await get().loadNotes(get().activeState);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
   },
 
   setColorForNotes: async (ids, colorIndex) => {
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ colorIndex, modifiedAt: Date.now() });
     await get().loadNotes(get().activeState);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
   },
 
   setPinForNotes: async (ids, pinned) => {
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ importance: pinned ? 1 : 0 });
     await get().loadNotes(get().activeState);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
   },
 
   // ─── Import from parsed notes.json ────────────────────────────────────────
@@ -144,7 +161,7 @@ const useNoteStore = create((set, get) => ({
     // Algorithm 2). Capture it into settings before filtering the rest out.
     const verifierNote = notes.find(n => n.folderId === 256 && n.title === 'name_master_password');
     if (verifierNote?.note) {
-      await setSetting('masterPasswordVerifier', verifierNote.note);
+      await syncSetting('masterPasswordVerifier', verifierNote.note);
     }
 
     // Filter out ColorNote system notes
@@ -202,6 +219,17 @@ const useNoteStore = create((set, get) => ({
     });
 
     await get().loadNotes('normal');
+
+    // Mirror the import to the cloud too — both newly-added notes and any
+    // calendarDate patches on notes that were already synced.
+    if (mapped.length) {
+      const addedUuids = mapped.map(n => n.uuid);
+      (await db.notes.where('uuid').anyOf(addedUuids).toArray()).forEach(pushNote);
+    }
+    if (toPatch.length) {
+      (await db.notes.where('id').anyOf(toPatch.map(p => p.id)).toArray()).forEach(pushNote);
+    }
+
     return {
       imported: mapped.length,
       patched: toPatch.length,

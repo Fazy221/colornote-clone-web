@@ -4,15 +4,17 @@ import { useNavigate } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, IconButton, Typography,
   List, ListItem, ListItemText, Switch, Divider,
-  ToggleButtonGroup, ToggleButton,
+  ToggleButtonGroup, ToggleButton, Avatar, Button,
 } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import ViewListIcon from '@mui/icons-material/ViewList';
 import ViewModuleIcon from '@mui/icons-material/ViewModule';
 import ViewComfyIcon from '@mui/icons-material/ViewComfy';
 import ViewCompactIcon from '@mui/icons-material/ViewCompact';
-import { getSetting, setSetting } from '../db/database';
+import { getSetting } from '../db/database';
+import { syncSetting } from '../sync/notesSync';
 import useUIStore from '../store/uiStore';
+import useAuthStore from '../store/authStore';
 
 export default function SettingsScreen() {
   const navigate = useNavigate();
@@ -22,6 +24,8 @@ export default function SettingsScreen() {
 
   const darkMode       = useUIStore(s => s.darkMode);
   const toggleDarkMode = useUIStore(s => s.toggleDarkMode);
+  const user           = useAuthStore(s => s.user);
+  const signOutUser     = useAuthStore(s => s.signOutUser);
 
   useEffect(() => {
     (async () => {
@@ -33,18 +37,18 @@ export default function SettingsScreen() {
 
   const handleSearchLocked = async (checked) => {
     setSearchLockedContent(checked);
-    await setSetting('searchLockedContent', checked);
+    await syncSetting('searchLockedContent', checked);
   };
 
   const handleDesktopViewChange = async (_e, value) => {
     if (value === null) return;
     setDefaultDesktopView(value);
-    await setSetting('defaultDesktopView', value);
+    await syncSetting('defaultDesktopView', value);
   };
 
   const handleDarkMode = async (checked) => {
     toggleDarkMode();
-    await setSetting('darkMode', checked);
+    await syncSetting('darkMode', checked);
   };
 
   return (
@@ -59,6 +63,26 @@ export default function SettingsScreen() {
       </AppBar>
 
       <Box sx={{ flex: 1, overflowY: 'auto' }}>
+
+        {/* ── ACCOUNT ──────────────────────────────────────────────────────── */}
+        <Typography variant="caption" sx={{ display: 'block', px: 2, pt: 2, pb: 0.5, color: 'text.secondary' }}>
+          ACCOUNT
+        </Typography>
+        <List disablePadding sx={{ bgcolor: 'background.paper' }}>
+          <ListItem sx={{ py: 1.5, gap: 1.5 }}>
+            <Avatar src={user?.photoURL || undefined} sx={{ width: 40, height: 40 }}>
+              {(user?.displayName || user?.email || '?').charAt(0).toUpperCase()}
+            </Avatar>
+            <ListItemText
+              primary={user?.displayName || 'Signed in'}
+              secondary={user?.email}
+            />
+            <Button color="error" size="small" onClick={signOutUser}>
+              Sign out
+            </Button>
+          </ListItem>
+          <Divider component="li" />
+        </List>
 
         {/* ── DISPLAY ─────────────────────────────────────────────────────── */}
         <Typography variant="caption" sx={{ display: 'block', px: 2, pt: 2, pb: 0.5, color: 'text.secondary' }}>
