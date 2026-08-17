@@ -10,6 +10,9 @@
     "deploy": "vite build && firebase deploy --only hosting"
   },
   "dependencies": {
+    "@capacitor-firebase/authentication": "^8.4.0",
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
     "@emotion/react": "^11.11.4",
     "@emotion/styled": "^11.11.5",
     "@mui/icons-material": "^5.15.18",
@@ -25,10 +28,12 @@
     "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.2",
     "@vitejs/plugin-react": "^4.2.1",
     "jsdom": "^25.0.0",
+    "typescript": "^7.0.2",
     "vite": "^5.2.11",
     "vitest": "^4.1.10"
   }

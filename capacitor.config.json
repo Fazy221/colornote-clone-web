@@ -1,0 +1,11 @@
+{
+  "appId": "com.faizan.colornote",
+  "appName": "ColorNote",
+  "webDir": "dist",
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": false,
+      "providers": ["google.com"]
+    }
+  }
+}

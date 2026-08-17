@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ColorNote</string>
+    <string name="title_activity_main">ColorNote</string>
+    <string name="package_name">com.faizan.colornote</string>
+    <string name="custom_url_scheme">com.faizan.colornote</string>
+</resources>
