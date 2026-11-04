@@ -29,6 +29,7 @@ import FolderPicker from '../components/common/FolderPicker';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ColorFilterDialog from '../components/common/ColorFilterDialog';
 import BottomNav from '../components/layout/BottomNav';
+import SyncStatus from '../components/layout/SyncStatus';
 import { NOTE_COLORS } from '../utils/colors';
 import { ARCHIVE_QUESTION } from '../utils/reminders';
 import useNoteStore from '../store/noteStore';
@@ -261,6 +262,8 @@ export default function HomeScreen() {
                 Color<Typography component="span" sx={{ fontWeight: 700, fontSize: '1.15rem' }}>Note</Typography>
               </Typography>
             </Box>
+
+            <SyncStatus />
 
             {/* Color filter — single icon opens the full Color modal (all 10
                 colors, filter/rename/counts), replacing the old always-visible

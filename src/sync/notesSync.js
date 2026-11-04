@@ -24,16 +24,35 @@
 // a field changed elsewhere since this browser last heard of the note (a pin, a
 // dismissed reminder, a field this app doesn't know) is never overwritten. Only
 // a new note sends the whole doc, with merge.
+//
+// Offline: every change is first written to the outbox (outbox.js), which
+// lives in IndexedDB and survives closing the app. It leaves the outbox only
+// when the cloud confirms it. Sync starts only once the cloud answers; until
+// then changes just wait there, and it tries again when the browser comes
+// back online, or every minute. Once started, what is still waiting goes out,
+// and the fields waiting for a note are kept over the cloud's copy.
 
 import {
-  collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot, writeBatch,
+  collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocFromServer, getDocsFromServer,
+  onSnapshot, writeBatch,
 } from 'firebase/firestore';
 import { db as firestoreDb } from '../firebase';
-import { db, setSetting } from '../db/database';
+import { db, getSetting, setSetting } from '../db/database';
 import { BUMP_FIELDS, CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
+import {
+  recordNote, recordDeletion, recordSetting, confirmNote, confirmSetting, dropNote,
+  pendingNotes, pendingSettings,
+} from './outbox';
+import { setSyncPhase } from './syncStatus';
 
 let unsubscribeNotes = null;
 let currentUid = null;
+// True once the first catch-up with the cloud is done; until then changes only wait in the outbox.
+let ready = false;
+let retryTimer = null;
+let onlineHandler = null;
+let lastReplay = Promise.resolve();
+const RETRY_MS = 60_000;
 
 // Fields compared when the two copies have the same `modifiedAt`. The reminder
 // fields are here because the phone changes them without bumping `modifiedAt`.
@@ -83,9 +102,16 @@ function toCloudDoc(note) {
 // `fields` names what changed; only those are sent. Without it (a new note, a
 // copy) the whole note is sent, merged into whatever the cloud has.
 export async function pushNote(note, fields) {
-  if (!currentUid || !note?.uuid) return;
+  if (!note?.uuid) return;
   if (fields && !fields.length) return;
-  const uid = currentUid;
+  const waiting = await recordNote(note.uuid, fields ?? null);
+  if (!ready || !currentUid) return; // goes out when sync starts
+  await sendNote(currentUid, note, waiting.fields, waiting.seq);
+}
+
+// `fields`: every field still waiting for this note (null: the whole note).
+// The promise settles only when the cloud confirms, which offline can be much later.
+async function sendNote(uid, note, fields, seq) {
   const ref = doc(firestoreDb, 'users', uid, 'notes', note.uuid);
   try {
     if (!fields) {
@@ -97,27 +123,56 @@ export async function pushNote(note, fields) {
         if (e?.code !== 'not-found') throw e;
         // Deleted elsewhere meanwhile. Text edited here is the only copy left,
         // so the note comes back; a pin or a move on its own doesn't.
-        if (!fields.some(f => CONTENT_FIELDS.includes(f))) return;
+        if (!fields.some(f => CONTENT_FIELDS.includes(f))) {
+          await confirmNote(note.uuid, seq);
+          return;
+        }
         await setDoc(ref, toCloudDoc(note), { merge: true });
       }
     }
     markSynced(uid, note.uuid);
+    await confirmNote(note.uuid, seq);
   } catch (e) {
-    // Firestore's own offline queue retries automatically once back online.
-    console.error('pushNote failed (will retry when online):', e.code || e);
+    // Stays in the outbox, and goes out again the next time sync starts.
+    console.error('Note upload failed, kept for later:', e?.code || e?.name);
   }
 }
 
 export async function pushNoteDeletion(uuid) {
-  if (!currentUid || !uuid) return;
-  const uid = currentUid;
-  markSynced(uid, uuid, false);
+  if (!uuid) return;
+  const seq = await recordDeletion(uuid);
+  if (currentUid) markSynced(currentUid, uuid, false);
+  if (!ready || !currentUid) return;
+  await sendDeletion(currentUid, uuid, seq);
+}
+
+async function sendDeletion(uid, uuid, seq) {
   try {
     await deleteDoc(doc(firestoreDb, 'users', uid, 'notes', uuid));
+    await confirmNote(uuid, seq);
   } catch (e) {
-    console.error('pushNoteDeletion failed (will retry when online):', e.code || e);
+    console.error('Note deletion failed, kept for later:', e?.code || e?.name);
   }
 }
+
+// Sends everything still in the outbox. Not awaited by startSync: offline mid-way, these settle
+// only once the connection is back.
+async function replayPending(uid) {
+  const sends = [];
+  for (const entry of (await pendingNotes()).values()) {
+    if (entry.deleted) { sends.push(sendDeletion(uid, entry.uuid, entry.seq)); continue; }
+    const note = await db.notes.where('uuid').equals(entry.uuid).first();
+    if (!note) { await dropNote(entry.uuid); continue; }
+    sends.push(sendNote(uid, note, entry.fields, entry.seq));
+  }
+  for (const [name, entry] of await pendingSettings()) {
+    sends.push(sendSetting(uid, name, await getSetting(name), entry.seq));
+  }
+  await Promise.all(sends);
+}
+
+// Settles once what was waiting when sync started has been confirmed (tests use it).
+export const syncSettled = () => lastReplay;
 
 // ─── Notes: pull (cloud → local) ───────────────────────────────────────────
 async function upsertLocalNoteFromCloud(uuid, cloudData) {
@@ -143,10 +198,12 @@ async function removeLocalNoteByUuid(uuid) {
 // sync existed, like your laptop with the 1,784 imported notes (push
 // whatever the cloud doesn't have yet, or only has an older copy of).
 async function performInitialReconciliation(uid) {
-  const [localNotes, remoteSnapshot] = await Promise.all([
+  const [localNotes, remoteSnapshot, pending] = await Promise.all([
     db.notes.toArray(),
-    getDocs(collection(firestoreDb, 'users', uid, 'notes')),
+    getDocsFromServer(collection(firestoreDb, 'users', uid, 'notes')),
+    pendingNotes(),
   ]);
+  if (uid !== currentUid) return;
 
   const remoteByUuid = new Map(remoteSnapshot.docs.map(d => [d.id, d.data()]));
 
@@ -160,6 +217,24 @@ async function performInitialReconciliation(uid) {
   const toPush = [];
   for (const local of localNotes) {
     const remote = remoteByUuid.get(local.uuid);
+    const waiting = pending.get(local.uuid);
+    if (waiting && !waiting.deleted) {
+      // Changed here, and the cloud never confirmed it: those fields go out
+      // after this loop. Everything else is taken from the cloud.
+      if (remote && waiting.fields) {
+        const theirs = Object.fromEntries(Object.entries(remote).filter(([k]) => !waiting.fields.includes(k)));
+        await db.notes.update(local.id, theirs);
+        synced.add(local.uuid);
+      } else if (!remote && cloudIsAuthoritative && synced.has(local.uuid)
+        && waiting.fields && !waiting.fields.some(f => CONTENT_FIELDS.includes(f))) {
+        // Deleted on another device, and only pinned or moved here: it stays deleted.
+        await removeLocalNoteByUuid(local.uuid);
+        synced.delete(local.uuid);
+        await dropNote(local.uuid);
+      }
+      remoteByUuid.delete(local.uuid);
+      continue;
+    }
     if (!remote && cloudIsAuthoritative && synced.has(local.uuid)) {
       // Synced before, gone from the cloud now: deleted on another device.
       await removeLocalNoteByUuid(local.uuid);
@@ -198,8 +273,10 @@ async function performInitialReconciliation(uid) {
     for (const [local] of toPush.slice(i, i + 450)) synced.add(local.uuid);
   }
 
-  // Whatever's left exists in the cloud but not on this device — pull it down.
+  // Whatever's left exists in the cloud but not on this device — pull it down,
+  // unless it was deleted here while offline (the outbox deletes it there too).
   for (const [uuid, remote] of remoteByUuid) {
+    if (pending.get(uuid)?.deleted) continue;
     await upsertLocalNoteFromCloud(uuid, remote);
     synced.add(uuid);
   }
@@ -238,27 +315,37 @@ function attachNotesListener(uid) {
 // Simpler than notes on purpose — no live listener, no per-key timestamps.
 // Fine for toggles like dark mode; low-stakes even in the rare case it's
 // briefly wrong across two devices open at once.
+// A setting changed here and still waiting in the outbox keeps its value here.
 async function reconcileSettings(uid) {
   const ref = doc(firestoreDb, 'users', uid, 'meta', 'appSettings');
-  const snap = await getDoc(ref);
-  const localSettings = await db.settings.toArray();
+  const [snap, localSettings, pending] = await Promise.all([
+    getDocFromServer(ref), db.settings.toArray(), pendingSettings(),
+  ]);
+  if (uid !== currentUid) return;
 
   if (!snap.exists()) {
     if (localSettings.length) {
       await setDoc(ref, Object.fromEntries(localSettings.map(s => [s.key, s.value])));
     }
+    for (const [name, entry] of pending) await confirmSetting(name, entry.seq);
     return;
   }
 
-  await db.settings.bulkPut(Object.entries(snap.data()).map(([key, value]) => ({ key, value })));
+  await db.settings.bulkPut(Object.entries(snap.data())
+    .filter(([key]) => !pending.has(key))
+    .map(([key, value]) => ({ key, value })));
 }
 
-export async function pushSetting(key, value) {
-  if (!currentUid) return;
+async function sendSetting(uid, key, value, seq) {
   try {
-    await setDoc(doc(firestoreDb, 'users', currentUid, 'meta', 'appSettings'), { [key]: value }, { merge: true });
+    await setDoc(
+      doc(firestoreDb, 'users', uid, 'meta', 'appSettings'),
+      { [key]: value === undefined ? null : value },
+      { merge: true },
+    );
+    await confirmSetting(key, seq);
   } catch (e) {
-    console.error('pushSetting failed (will retry when online):', e.code || e);
+    console.error('Setting upload failed, kept for later:', e?.code || e?.name);
   }
 }
 
@@ -268,6 +355,7 @@ export async function pushSetting(key, value) {
 export async function pullSetting(key) {
   if (!currentUid) return;
   try {
+    if ((await pendingSettings()).has(key)) return; // changed here, not sent yet: this copy is newer
     const snap = await getDoc(doc(firestoreDb, 'users', currentUid, 'meta', 'appSettings'));
     if (snap.exists() && key in snap.data()) await setSetting(key, snap.data()[key]);
   } catch (e) {
@@ -279,20 +367,65 @@ export async function pullSetting(key) {
 // setSetting — saves locally, then mirrors to the cloud.
 export async function syncSetting(key, value) {
   await setSetting(key, value);
-  pushSetting(key, value);
+  const seq = await recordSetting(key);
+  if (!ready || !currentUid) return; // goes out when sync starts
+  sendSetting(currentUid, key, value, seq);
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────
+// Returns once sync is live, or once it knows it has to wait for a connection.
 export async function startSync(uid) {
   if (currentUid === uid) return; // already running for this user
+  stopSync();
   currentUid = uid;
-  await reconcileSettings(uid);
-  await performInitialReconciliation(uid);
-  unsubscribeNotes = attachNotesListener(uid);
+  await attemptStart(uid);
+}
+
+async function attemptStart(uid) {
+  clearRetry();
+  if (uid !== currentUid) return;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    setSyncPhase('waiting');
+    scheduleRetry(uid);
+    return;
+  }
+  setSyncPhase('connecting');
+  try {
+    await reconcileSettings(uid);
+    if (uid !== currentUid) return;
+    await performInitialReconciliation(uid);
+    if (uid !== currentUid) return;
+    ready = true;
+    unsubscribeNotes = attachNotesListener(uid);
+    setSyncPhase('live');
+    lastReplay = replayPending(uid).catch(e => console.error('Outbox replay failed:', e?.code || e?.name));
+  } catch (e) {
+    // Most often offline, or the cloud didn't answer. Nothing was taken or lost: try again later.
+    console.error('Sync could not start, trying again later:', e?.code || e?.name);
+    if (uid !== currentUid) return;
+    setSyncPhase('waiting');
+    scheduleRetry(uid);
+  }
+}
+
+function scheduleRetry(uid) {
+  onlineHandler = () => attemptStart(uid);
+  if (typeof window !== 'undefined') window.addEventListener('online', onlineHandler);
+  retryTimer = setTimeout(() => attemptStart(uid), RETRY_MS);
+}
+
+function clearRetry() {
+  if (onlineHandler && typeof window !== 'undefined') window.removeEventListener('online', onlineHandler);
+  onlineHandler = null;
+  clearTimeout(retryTimer);
+  retryTimer = null;
 }
 
 export function stopSync() {
+  clearRetry();
   if (unsubscribeNotes) unsubscribeNotes();
   unsubscribeNotes = null;
   currentUid = null;
+  ready = false;
+  setSyncPhase('off');
 }

@@ -23,6 +23,11 @@ db.version(1).stores({
   settings: 'key',
 });
 
+// Changes the cloud hasn't confirmed yet (see sync/outbox.js).
+db.version(2).stores({
+  outbox: 'key',
+});
+
 // Helper: get all notes in a state, sorted by modifiedAt desc
 export async function getNotesByState(state = 'normal') {
   return db.notes

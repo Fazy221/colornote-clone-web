@@ -49,6 +49,9 @@ vi.mock('../../db/database', () => ({
   setSetting: vi.fn(async () => {}),
 }));
 
+// The sync icon reads the outbox from IndexedDB, which these tests don't have.
+vi.mock('../../components/layout/SyncStatus', () => ({ default: () => null }));
+
 import HomeScreen from '../HomeScreen';
 
 // ── Fake IntersectionObserver — jsdom doesn't implement one, and we also
