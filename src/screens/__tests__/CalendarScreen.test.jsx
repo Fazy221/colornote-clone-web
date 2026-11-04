@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../../db/database', () => ({ db: { notes: { filter: () => ({ toArray: async () => [] }) } } }));
@@ -47,6 +47,24 @@ describe('the calendar screen', () => {
   it('leaves the arrow keys alone while typing in a field', () => {
     render(<MemoryRouter><><input data-testid="field" /><CalendarScreen /></></MemoryRouter>);
     fireEvent.keyDown(screen.getByTestId('field'), { key: 'ArrowRight' });
+    expect(screen.getByText(label(0))).toBeTruthy();
+  });
+
+  it('opens the date picker from the month title and turns to the month chosen', async () => {
+    render(<MemoryRouter><CalendarScreen /></MemoryRouter>);
+    fireEvent.click(screen.getByLabelText('Pick a month'));
+    fireEvent.click(screen.getByLabelText('Next month'));
+    fireEvent.click(screen.getByLabelText('Next month'));
+    fireEvent.click(screen.getByText('OK'));
+    expect(screen.getByText(label(2))).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('OK')).toBeNull());
+  });
+
+  it('leaves the month alone when the picker is cancelled', () => {
+    render(<MemoryRouter><CalendarScreen /></MemoryRouter>);
+    fireEvent.click(screen.getByLabelText('Pick a month'));
+    fireEvent.click(screen.getByLabelText('Next month'));
+    fireEvent.click(screen.getByText('Cancel'));
     expect(screen.getByText(label(0))).toBeTruthy();
   });
 });

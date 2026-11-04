@@ -23,9 +23,9 @@ export default function ColorPicker({ open, currentColor, onSelect, onClose }) {
                 sx={{
                   position: 'relative',
                   backgroundColor: color.bg,
-                  border: isSelected
-                    ? `2.5px solid #212121`
-                    : `1px solid rgba(0,0,0,0.12)`,
+                  border: isSelected ? '2.5px solid' : '1px solid',
+                  // text.primary: dark ink on a light page, light ink on a dark one.
+                  borderColor: isSelected ? 'text.primary' : 'divider',
                   borderRadius: '4px',
                   height: 70,
                   display: 'flex',

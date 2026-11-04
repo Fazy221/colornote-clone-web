@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box, Typography, useTheme } from '@mui/material';
 import LockIcon from '@mui/icons-material/Lock';
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import EventIcon from '@mui/icons-material/Event';
@@ -28,7 +28,9 @@ function buildPreview(note) {
 // since the event that triggered it is a deferred timer callback rather than
 // a live event object.
 export default function NoteCard({ note, selected, onPress, onLongPress }) {
-  const color = getColor(note.colorIndex);
+  const dark = useTheme().palette.mode === 'dark';
+  // Dark mode, as on the phone: a dark row, the colour kept in a stripe on the left.
+  const color = getColor(note.colorIndex, dark);
   const preview = buildPreview(note);
   const dateStr = formatNoteDate(note.modifiedAt);
   const isChecklist = note.type === 'checklist';
@@ -113,6 +115,7 @@ export default function NoteCard({ note, selected, onPress, onLongPress }) {
         justifyContent: 'center',
         cursor: 'pointer',
         position: 'relative',
+        borderLeft: dark ? `4px solid ${color.border}` : 'none',
         outline: selected ? `2px solid ${color.border}` : 'none',
         outlineOffset: '-2px',
         userSelect: 'none',

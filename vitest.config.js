@@ -6,5 +6,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // mcp-server has its own tests (node:test); run them with `npm test` inside that folder.
+    exclude: ['**/node_modules/**', 'dist/**', 'mcp-server/**'],
   },
 });

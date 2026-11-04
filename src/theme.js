@@ -27,7 +27,7 @@ export const buildTheme = (darkMode = false) => createTheme({
     fontFamily: "'Roboto', sans-serif",
     h6: { fontWeight: 500, fontSize: '1.1rem' },
     body1: { fontSize: '0.95rem' },
-    body2: { fontSize: '0.85rem', color: '#757575' },
+    body2: { fontSize: '0.85rem', color: darkMode ? '#BDBDBD' : '#757575' },
     caption: { fontSize: '0.75rem' },
   },
 
@@ -47,7 +47,7 @@ export const buildTheme = (darkMode = false) => createTheme({
       styleOverrides: {
         root: {
           height: 56,
-          borderTop: '1px solid rgba(0,0,0,0.08)',
+          borderTop: `1px solid ${darkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)'}`,
         },
       },
     },
@@ -95,7 +95,7 @@ export const buildTheme = (darkMode = false) => createTheme({
 
     MuiDivider: {
       styleOverrides: {
-        root: { borderColor: 'rgba(0,0,0,0.06)' },
+        root: { borderColor: darkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)' },
       },
     },
   },

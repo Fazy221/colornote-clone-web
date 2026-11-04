@@ -59,7 +59,12 @@ export function mergeNote({ base, local, remote, pending }) {
     else if (sameValue(local[f], remote[f])) continue;
     else if (changedThere(f) && !localIsNewer) merged[f] = remote[f];
   }
-  merged.modifiedAt = Math.max(local.modifiedAt || 0, remote.modifiedAt || 0);
+  // The newer date, except a date chosen here by hand (it may be older than the cloud's): while the
+  // cloud's date is still the one this device last saw, ours is the only change and stays.
+  const dateChosenHere = changedHere('modifiedAt') && !!base && sameValue(remote.modifiedAt, base.modifiedAt);
+  merged.modifiedAt = dateChosenHere
+    ? local.modifiedAt || 0
+    : Math.max(local.modifiedAt || 0, remote.modifiedAt || 0);
 
   const send = [...fields, 'modifiedAt'].filter((f, i, all) => all.indexOf(f) === i
     && f !== 'id' && f !== 'uuid' && f in merged && !sameValue(merged[f], remote[f]));

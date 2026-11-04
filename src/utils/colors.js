@@ -20,7 +20,20 @@ export const NOTE_COLORS = {
   9: { bg: '#F5F5F5', text: '#757575', border: '#BDBDBD', name: 'Light' },     // To Download List
 };
 
-export const getColor = (index) => NOTE_COLORS[index] ?? NOTE_COLORS[0];
+// Dark mode, as on the phone (Theme.kt: noteTitlesNight, noteSolids, rowBackground): the page is dark and a
+// note keeps its colour only in the top bar and the swatch. Change one, change the other (CLAUDE.md, "Both apps").
+const NIGHT_BAR = ['#2C2C2C', '#661E1F', '#944304', '#807800', '#006600', '#113366', '#4E0978', '#282828', '#3A3A3A', '#2C2C2C'];
+const NIGHT_SWATCH = ['#FFFFFF', '#E8434A', '#FFA000', '#FFDF00', '#73C634', '#0071D4', '#7B35BE', '#000000', '#8A8A8A', '#FFFFFF'];
+const NIGHT_PAGE = '#101010';
+const NIGHT_TEXT = '#E0E0E0';
+
+// { bg, text, border } as before; in dark mode also { bar }, the colour of the top bar. In light mode bar === bg.
+export const getColor = (index, dark = false) => {
+  const light = NOTE_COLORS[index] ?? NOTE_COLORS[0];
+  if (!dark) return { ...light, bar: light.bg };
+  const i = NOTE_COLORS[index] ? index : 0;
+  return { bg: NIGHT_PAGE, text: NIGHT_TEXT, border: NIGHT_SWATCH[i], bar: NIGHT_BAR[i], name: light.name };
+};
 
 // Calendar dot colors — use the border shade so they're visible on white
 export const calendarDotColor = (colorIndex) => {

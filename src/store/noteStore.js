@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import useUIStore from './uiStore';
 import { db, getNotesByState, searchNotes, getSetting } from '../db/database';
-import { pushNote, pushNoteDeletion, syncSetting } from '../sync/notesSync';
+import { pushNote, pushNoteDeletion, pushVersions, syncSetting } from '../sync/notesSync';
+import { deleteVersionsFor, recordVersion } from '../db/versionLog';
+import { restorePatch } from '../utils/versions';
 import { BUMP_FIELDS, planEditorSave, sameValue } from '../utils/noteFields';
 import { ENDED_REMINDER, hasLiveReminder } from '../utils/reminders';
 import { noteFromFile, planImport } from '../utils/importPlan';
@@ -11,6 +13,18 @@ const ENDED_FIELDS = ['state', ...Object.keys(ENDED_REMINDER)];
 
 // A short message at the bottom of the window.
 const toast = (message) => useUIStore.getState().showToast(message);
+
+// Keeps the note's history up to date after `after` was saved over `before`. History is a
+// convenience: if it fails, the edit itself has already been saved and stays saved.
+async function track(before, after, kind) {
+  try {
+    if (!before || !after) return;
+    const result = await recordVersion(before, after, { kind });
+    if (result) pushVersions(after.uuid, result);
+  } catch (e) {
+    console.error('Could not record version history:', e);
+  }
+}
 
 const useNoteStore = create((set, get) => ({
   notes: [],
@@ -72,7 +86,9 @@ const useNoteStore = create((set, get) => ({
     }
     await db.notes.update(id, patch);
     await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id), Object.keys(patch));
+    const after = await db.notes.get(id);
+    pushNote(after, Object.keys(patch));
+    await track(current, after);
     toast('Note updated');
   },
 
@@ -82,8 +98,10 @@ const useNoteStore = create((set, get) => ({
     let copy = null;
     let fields = null;
     let savedId = id;
+    let before = null;
     await db.transaction('rw', db.notes, async () => {
       const current = await db.notes.get(id);
+      before = current || null;
       const plan = planEditorSave({
         base, edited, current: current || null, now: Date.now(), newUuid: () => crypto.randomUUID(),
       });
@@ -101,9 +119,40 @@ const useNoteStore = create((set, get) => ({
     if (savedId === null) return id;
     await get().loadNotes(get().activeState);
     if (copy) pushNote(copy);
-    pushNote(await db.notes.get(savedId), fields ?? undefined);
+    const saved = await db.notes.get(savedId);
+    pushNote(saved, fields ?? undefined);
+    if (savedId === id) await track(before, saved);
     toast('Note saved');
     return savedId;
+  },
+
+  // The date a note shows as last modified, chosen by hand from the editor. Nothing else changes.
+  // A date moved back is kept through sync (see mergeNote).
+  setModifiedDate: async (id, ms) => {
+    const current = await db.notes.get(id);
+    if (!current || !Number.isFinite(ms) || ms === current.modifiedAt) return;
+    await db.notes.update(id, { modifiedAt: ms });
+    await get().loadNotes(get().activeState);
+    const after = await db.notes.get(id);
+    pushNote(after, ['modifiedAt']);
+    await track(current, after, 'date');
+    toast('Date changed');
+  },
+
+  // Puts a note back to a version of it (see the history screen). The text, colour, folder and date
+  // all go back, as one new entry in the history, so restoring can itself be undone.
+  restoreVersion: async (id, version) => {
+    const current = await db.notes.get(id);
+    if (!current) return false;
+    const patch = restorePatch(version, current);
+    if (!Object.keys(patch).length) { toast('Already this version'); return false; }
+    await db.notes.update(id, patch);
+    await get().loadNotes(get().activeState);
+    const after = await db.notes.get(id);
+    pushNote(after, Object.keys(patch));
+    await track(current, after, 'restore');
+    toast('Version restored');
+    return true;
   },
 
   // Move to trash — organizational, not a content edit, so modifiedAt is
@@ -142,6 +191,7 @@ const useNoteStore = create((set, get) => ({
   deleteNotePermanently: async (id) => {
     const note = await db.notes.get(id);
     await db.notes.delete(id);
+    if (note?.uuid) await deleteVersionsFor(note.uuid).catch(() => {});
     await get().loadNotes(get().activeState);
     if (note?.uuid) pushNoteDeletion(note.uuid);
     toast('Note deleted');
@@ -219,11 +269,14 @@ const useNoteStore = create((set, get) => ({
   setColorForNotes: async (ids, colorIndex) => {
     if (!ids.length) return;
     // Notes already that colour keep their date.
-    const changed = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => n.colorIndex !== colorIndex).map(n => n.id);
+    const was = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => n.colorIndex !== colorIndex);
+    const changed = was.map(n => n.id);
     if (!changed.length) return;
     await db.notes.where('id').anyOf(changed).modify({ colorIndex, modifiedAt: Date.now() });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(changed).toArray()).forEach(n => pushNote(n, ['colorIndex', 'modifiedAt']));
+    const now = await db.notes.where('id').anyOf(changed).toArray();
+    now.forEach(n => pushNote(n, ['colorIndex', 'modifiedAt']));
+    for (const n of now) await track(was.find(w => w.id === n.id), n);
   },
 
   setPinForNotes: async (ids, pinned) => {
@@ -238,11 +291,14 @@ const useNoteStore = create((set, get) => ({
   setFolderForNotes: async (ids, folderId) => {
     if (!ids.length) return;
     // Notes already in that folder keep their date.
-    const changed = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => (n.folderId || 0) !== folderId).map(n => n.id);
+    const was = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => (n.folderId || 0) !== folderId);
+    const changed = was.map(n => n.id);
     if (!changed.length) return;
     await db.notes.where('id').anyOf(changed).modify({ folderId, modifiedAt: Date.now() });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(changed).toArray()).forEach(n => pushNote(n, ['folderId', 'modifiedAt']));
+    const now = await db.notes.where('id').anyOf(changed).toArray();
+    now.forEach(n => pushNote(n, ['folderId', 'modifiedAt']));
+    for (const n of now) await track(was.find(w => w.id === n.id), n);
   },
 
   // Deleting a folder keeps its notes; they just belong to no folder any more.
@@ -302,8 +358,9 @@ const useNoteStore = create((set, get) => ({
     }
     if (updated.length) {
       const fieldsById = new Map(updated.map(u => [u.id, Object.keys(u.changes)]));
-      (await db.notes.where('id').anyOf([...fieldsById.keys()]).toArray())
-        .forEach(n => pushNote(n, fieldsById.get(n.id)));
+      const rows = await db.notes.where('id').anyOf([...fieldsById.keys()]).toArray();
+      rows.forEach(n => pushNote(n, fieldsById.get(n.id)));
+      for (const n of rows) await track(updated.find(u => u.id === n.id)?.base, n);
     }
 
     return plan.report;

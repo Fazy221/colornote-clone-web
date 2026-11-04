@@ -51,7 +51,7 @@ export default function FoldersScreen() {
           <IconButton aria-label="Add folder" onClick={() => setAdding(true)}><AddIcon /></IconButton>
         </Toolbar>
         <Box
-          sx={{ px: 2, py: 0.5, bgcolor: 'background.paper', borderBottom: '1px solid rgba(0,0,0,0.06)', cursor: 'pointer' }}
+          sx={{ px: 2, py: 0.5, bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider', cursor: 'pointer' }}
           onClick={e => setSortAnchor(e.currentTarget)}
         >
           <Typography variant="caption" sx={{ color: 'text.secondary', display: 'flex', alignItems: 'center', gap: 0.25 }}>
@@ -76,7 +76,7 @@ export default function FoldersScreen() {
               sx={{
                 display: 'flex', alignItems: 'center', minHeight: 64, cursor: 'pointer',
                 bgcolor: !tinted ? 'transparent' : dark ? `${swatch.border}59` : swatch.bg,
-                borderBottom: '1px solid rgba(0,0,0,0.08)',
+                borderBottom: 1, borderColor: 'divider',
               }}
             >
               <IconButton
@@ -90,7 +90,7 @@ export default function FoldersScreen() {
               <Box
                 sx={{
                   px: 1.1, py: 0.2, borderRadius: '12px', fontSize: '0.875rem', lineHeight: 1.5,
-                  bgcolor: tinted ? swatch.border : 'rgba(0,0,0,0.08)',
+                  bgcolor: tinted ? swatch.border : 'action.selected',
                   color: tinted ? '#fff' : 'text.primary',
                 }}
               >

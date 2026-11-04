@@ -19,3 +19,11 @@ android/.gradle/
 .DS_Store
 *.log
 .vscode/
+
+# MCP server: never commit a service-account key
+mcp-server/*.json.key
+service-account*.json
+*-adminsdk-*.json
+colornote-reader*.json
+!mcp-server/package.json
+!mcp-server/package-lock.json

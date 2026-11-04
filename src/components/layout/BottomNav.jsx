@@ -15,14 +15,17 @@ import MenuIcon from '@mui/icons-material/Menu';
 // just wasted space with no function.
 const NAV_ITEMS = [
   { label: '',          icon: <NotesIcon />,             path: '/' },
-  { label: '',          icon: <FolderOutlinedIcon />,     path: '/folders' },
   { label: '',          icon: <CalendarMonthIcon />,      path: '/calendar' },
+  { label: '',          icon: <FolderOutlinedIcon />,     path: '/folders' },
   { label: '',          icon: <SearchIcon />,             path: '/search' },
   { label: '',          icon: <MenuIcon />,               path: '/more' },
 ];
+// Same order as the phone's tab bar (Tab in ui/Common.kt): Notes, Calendar, Folders, Search, More.
+// Change one, change the other (see CLAUDE.md, "Both apps").
+const CALENDAR_INDEX = 1;
 
 const PATH_TO_INDEX = {
-  '/': 0, '/folders': 1, '/calendar': 2, '/search': 3, '/more': 4,
+  '/': 0, '/calendar': 1, '/folders': 2, '/search': 3, '/more': 4,
   '/archive': 4, '/trash': 4, '/settings': 4, '/import': 4,
 };
 
@@ -31,7 +34,7 @@ export default function BottomNav() {
   const location = useLocation();
 
   const currentIndex = PATH_TO_INDEX[location.pathname]
-    ?? (location.pathname.startsWith('/folders/') ? 1 : 0);
+    ?? (location.pathname.startsWith('/folders/') ? 2 : 0);
 
   return (
     <Paper
@@ -42,7 +45,8 @@ export default function BottomNav() {
         left: 0,
         right: 0,
         zIndex: 100,
-        borderTop: '1px solid rgba(0,0,0,0.1)',
+        borderTop: 1,
+        borderColor: 'divider',
       }}
     >
       <BottomNavigation
@@ -63,7 +67,7 @@ export default function BottomNav() {
               color: i === currentIndex ? '#00BCD4' : 'text.secondary',
               minWidth: 0,
               '& .MuiSvgIcon-root': {
-                fontSize: i === 2 ? '1.4rem' : '1.5rem', // calendar icon slightly smaller
+                fontSize: i === CALENDAR_INDEX ? '1.4rem' : '1.5rem', // calendar icon slightly smaller
               },
             }}
           />

@@ -39,7 +39,7 @@
 
 import {
   collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocFromServer, getDocsFromServer,
-  onSnapshot, writeBatch,
+  getDocs, onSnapshot, writeBatch,
 } from 'firebase/firestore';
 import { db as firestoreDb } from '../firebase';
 import { db, getSetting, setSetting } from '../db/database';
@@ -48,6 +48,7 @@ import {
   recordNote, recordDeletion, recordSetting, confirmNote, confirmSetting, dropNote, settleNote,
   pendingNotes, pendingSettings,
 } from './outbox';
+import { deleteVersionsFor, markVersionSynced, takeCloudVersions, unsyncedVersions } from '../db/versionLog';
 import { mergeNote, conflictCopy } from './merge';
 import { setSyncPhase } from './syncStatus';
 
@@ -183,11 +184,73 @@ export async function pushNoteDeletion(uuid) {
 
 async function sendDeletion(uid, uuid, seq) {
   try {
+    await deleteCloudVersions(uid, uuid);
     await deleteDoc(doc(firestoreDb, 'users', uid, 'notes', uuid));
     await db.bases.delete(uuid);
     await confirmNote(uuid, seq);
   } catch (e) {
     console.error('Note deletion failed, kept for later:', e?.code || e?.name);
+  }
+}
+
+// ─── Version history ───────────────────────────────────────────────────────
+// users/{uid}/notes/{noteUuid}/versions/{versionId}, shared with the phone (utils/versions.js). Keeping
+// history must never get in the way of the note itself, so nothing here throws.
+const versionsRef = (uid, noteUuid) => collection(firestoreDb, 'users', uid, 'notes', noteUuid, 'versions');
+
+async function sendVersion(uid, row) {
+  try {
+    const { id, noteUuid, synced, ...fields } = row;
+    await setDoc(doc(versionsRef(uid, noteUuid), id), fields);
+    await markVersionSynced(row);
+  } catch (e) {
+    console.error('Version upload failed, kept for later:', e?.code || e?.name);
+  }
+}
+
+// `result` is what recordVersion returned: the rows written and the ids pruned.
+export async function pushVersions(noteUuid, result) {
+  if (!result || !ready || !currentUid) return; // what is unsynced goes out when sync starts
+  const uid = currentUid;
+  await Promise.all([
+    ...result.written.map(row => sendVersion(uid, row)),
+    ...result.pruned.map(id => deleteDoc(doc(versionsRef(uid, noteUuid), id)).catch(() => {})),
+  ]);
+}
+
+async function replayVersions(uid) {
+  try {
+    await Promise.all((await unsyncedVersions()).map(row => sendVersion(uid, row)));
+  } catch (e) {
+    console.error('Version replay failed:', e?.code || e?.name);
+  }
+}
+
+// Brings the cloud's versions of one note into this browser (the history screen calls it when it
+// opens). Returns false when there was no connection to ask.
+export async function pullVersions(noteUuid) {
+  if (!currentUid || !noteUuid) return false;
+  try {
+    const snap = await getDocs(versionsRef(currentUid, noteUuid));
+    await takeCloudVersions(noteUuid, snap.docs.map(d => ({ id: d.id, data: d.data() })));
+    return true;
+  } catch (e) {
+    console.error('Could not fetch version history:', e?.code || e?.name);
+    return false;
+  }
+}
+
+// A note deleted for good takes its history with it, here and in the cloud.
+async function deleteCloudVersions(uid, noteUuid) {
+  try {
+    const snap = await getDocs(versionsRef(uid, noteUuid));
+    for (let i = 0; i < snap.docs.length; i += 450) {
+      const batch = writeBatch(firestoreDb);
+      snap.docs.slice(i, i + 450).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+  } catch (e) {
+    console.error('Could not delete version history:', e?.code || e?.name);
   }
 }
 
@@ -204,6 +267,7 @@ async function replayPending(uid) {
   for (const [name, entry] of await pendingSettings()) {
     sends.push(sendSetting(uid, name, await getSetting(name), entry.seq));
   }
+  sends.push(replayVersions(uid)); // not behind the notes: those can wait offline for a long time
   await Promise.all(sends);
 }
 
@@ -262,6 +326,7 @@ async function applyCloudNote(uid, uuid, remote, entry, base) {
 async function removeLocalNoteByUuid(uuid) {
   const existing = await db.notes.where('uuid').equals(uuid).first();
   if (existing) await db.notes.delete(existing.id);
+  await deleteVersionsFor(uuid).catch(() => {});
 }
 
 // One-time reconciliation right after sign-in. Covers both a brand-new

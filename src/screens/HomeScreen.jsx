@@ -326,7 +326,7 @@ export default function HomeScreen() {
         {/* Sort bar */}
         {!selectionMode && (
           <Box
-            sx={{ px: 2, py: 0.5, bgcolor: 'background.paper', borderBottom: '1px solid rgba(0,0,0,0.06)' }}
+            sx={{ px: 2, py: 0.5, bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider' }}
             onClick={e => setSortAnchor(e.currentTarget)}
           >
             <Typography variant="caption" sx={{ color: 'text.secondary', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 0.25 }}>
@@ -441,7 +441,7 @@ export default function HomeScreen() {
         <Box sx={{
           position: 'fixed', bottom: 56, left: 0, right: 0, zIndex: 90,
           display: 'flex', bgcolor: 'background.paper',
-          borderTop: '1px solid rgba(0,0,0,0.1)',
+          borderTop: 1, borderColor: 'divider',
         }}>
           <IconButton
             onClick={() => setColorPickerOpen(true)}

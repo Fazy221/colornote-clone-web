@@ -4,7 +4,7 @@ import {
   Box, AppBar, Toolbar, IconButton, TextField,
   Typography, Checkbox, Menu, MenuItem, Divider,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Button,
-  CircularProgress, InputBase,
+  CircularProgress, InputBase, useTheme,
 } from '@mui/material';
 import ArrowBackIcon   from '@mui/icons-material/ArrowBack';
 import SaveIcon        from '@mui/icons-material/Save';
@@ -30,6 +30,9 @@ import ColorPicker          from '../components/common/ColorPicker';
 import FolderPicker         from '../components/common/FolderPicker';
 import FolderOutlinedIcon   from '@mui/icons-material/FolderOutlined';
 import MasterPasswordDialog from '../components/common/MasterPasswordDialog';
+import DatePickerDialog     from '../components/common/DatePickerDialog';
+import VersionHistoryDialog from '../components/notes/VersionHistoryDialog';
+import HistoryIcon          from '@mui/icons-material/History';
 import { getColor }         from '../utils/colors';
 import { formatFullDate }   from '../utils/dateUtils';
 import { parseFormat, formatOf, followEdit, toggleStyle, runsOf } from '../utils/textFormat';
@@ -75,8 +78,9 @@ export default function NoteEditorScreen() {
   const initialType   = searchParams.get('type') || 'text';
   const initialDate   = searchParams.get('date')  || null;
 
-  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin, liveReminderIds } = useNoteStore();
+  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin, liveReminderIds, setModifiedDate } = useNoteStore();
   const [archiveAskOpen, setArchiveAskOpen] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const showToast = useUIStore(s => s.showToast);
   const masterPassword    = useUIStore(s => s.masterPassword);
   const setMasterPassword = useUIStore(s => s.setMasterPassword);
@@ -117,6 +121,8 @@ export default function NoteEditorScreen() {
 
   // ── UI ───────────────────────────────────────────────────────────────────
   const [menuAnchor, setMenuAnchor]       = useState(null);
+  const [historyOpen, setHistoryOpen]     = useState(false);
+  const [reloadTick, setReloadTick]       = useState(0); // bumped after a restore, so the editor loads the note again
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -138,7 +144,14 @@ export default function NoteEditorScreen() {
   // type and lock, not the first render's.
   const queueSaveRef = useRef(null);
 
-  const color = getColor(colorIndex);
+  const dark = useTheme().palette.mode === 'dark';
+  // In dark mode the page is dark and the note's colour stays in the top bar and the swatch (as on the phone).
+  const color = getColor(colorIndex, dark);
+  const field = dark
+    ? { bg: 'rgba(255,255,255,0.1)', text: '#F5F5F5', edge: 'rgba(255,255,255,0.35)', edgeHover: 'rgba(255,255,255,0.6)' }
+    : { bg: 'rgba(255,255,255,0.9)', text: '#212121', edge: 'rgba(0,0,0,0.3)', edgeHover: 'rgba(0,0,0,0.5)' };
+  const swatch = { width: 32, height: 32, flexShrink: 0, borderRadius: '4px', bgcolor: dark ? color.border : color.bg, border: `2px solid ${dark ? 'rgba(255,255,255,0.7)' : color.border}` };
+  const ruleColor = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)';
   const spans = type === 'text' ? parseFormat(format, body.length) : [];
   const canFind = type === 'text' && !locked;
   const hits = finding && canFind ? findOffsets(body, findQuery) : [];
@@ -246,7 +259,7 @@ export default function NoteEditorScreen() {
       const latest = latestRef.current;
       if (latest?.dirty && !leavingRef.current) queueSaveRef.current?.(latest.values);
     };
-  }, [id]);
+  }, [id, reloadTick]);
 
   // ── Save ──────────────────────────────────────────────────────────────────
   // What the editor holds now, as plain values.
@@ -452,7 +465,7 @@ export default function NoteEditorScreen() {
   const saveRef = useRef(null);
   saveRef.current = handleSave;
   // Escape leaves the note, unless a menu, dialog or the find bar is open (those take Escape themselves).
-  const overlayOpen = Boolean(menuAnchor || colorPickerOpen || folderPickerOpen || deleteDialogOpen || archiveAskOpen || pwDialogOpen || finding);
+  const overlayOpen = Boolean(menuAnchor || colorPickerOpen || folderPickerOpen || deleteDialogOpen || archiveAskOpen || pwDialogOpen || datePickerOpen || historyOpen || finding);
   const escapeRef = useRef(null);
   escapeRef.current = () => { if (!overlayOpen) handleBack(); };
   // Ctrl+Enter saves and leaves, Ctrl+D duplicates, Ctrl+Alt+C opens the colour picker. They wait while a
@@ -529,6 +542,20 @@ export default function NoteEditorScreen() {
     else await saveChain.current;
   };
 
+  // The date picked in the dialog becomes the note's last-modified date, at the time of day it
+  // already has. Picking the same day changes nothing. A text being edited is saved first, so the
+  // chosen date is the one that stays.
+  const handleDatePicked = async ({ year, month, day }) => {
+    if (!currentIdRef.current) return;
+    const was = new Date(modifiedAt);
+    const next = new Date(year, month, day, was.getHours(), was.getMinutes(), was.getSeconds(), was.getMilliseconds());
+    if (next.toDateString() === was.toDateString()) return;
+    await flushSave();
+    await setModifiedDate(currentIdRef.current, next.getTime());
+    baseRef.current = { ...baseRef.current, modifiedAt: next.getTime() };
+    if (isMounted.current) setModifiedAt(next.getTime());
+  };
+
   const handleDuplicate = async () => {
     setMenuAnchor(null);
     await flushSave();
@@ -587,15 +614,15 @@ export default function NoteEditorScreen() {
   if (locked) {
     return (
       <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: color.bg }}>
-        <AppBar position="static" elevation={0} sx={{ bgcolor: color.bg, color: color.text }}>
+        <AppBar position="static" elevation={0} sx={{ bgcolor: color.bar, color: color.text }}>
           <Toolbar sx={{ minHeight: 56, px: 1 }}>
             <IconButton aria-label="Back" onClick={() => navigate(-1)} sx={{ color: color.text }}>
               <ArrowBackIcon />
             </IconButton>
-            <Box sx={{ flex: 1, mx: 1, bgcolor: 'rgba(255,255,255,0.9)', border: '1px solid rgba(0,0,0,0.3)', borderRadius: '4px', px: 1.5, py: 0.75 }}>
-              <Typography sx={{ fontSize: '0.95rem', color: '#212121' }}>{title || ''}</Typography>
+            <Box sx={{ flex: 1, mx: 1, bgcolor: field.bg, border: `1px solid ${field.edge}`, borderRadius: '4px', px: 1.5, py: 0.75 }}>
+              <Typography sx={{ fontSize: '0.95rem', color: field.text }}>{title || ''}</Typography>
             </Box>
-            <Box sx={{ width: 32, height: 32, borderRadius: '4px', bgcolor: color.bg, border: `2px solid ${color.border}` }} />
+            <Box sx={swatch} />
             <IconButton sx={{ color: color.text }}><MoreVertIcon /></IconButton>
           </Toolbar>
         </AppBar>
@@ -626,7 +653,7 @@ export default function NoteEditorScreen() {
     <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: color.bg }}>
 
       {/* Top bar */}
-      <AppBar position="static" elevation={0} sx={{ bgcolor: color.bg, color: color.text }}>
+      <AppBar position="static" elevation={0} sx={{ bgcolor: color.bar, color: color.text }}>
         <Toolbar sx={{ minHeight: 56, px: 1, gap: 1 }}>
           {/* Save while there is something to save, otherwise the way back. */}
           <IconButton
@@ -644,13 +671,13 @@ export default function NoteEditorScreen() {
             fullWidth
             sx={{
               '& .MuiOutlinedInput-root': {
-                bgcolor: 'rgba(255,255,255,0.9)', borderRadius: '4px',
+                bgcolor: field.bg, borderRadius: '4px', color: field.text,
                 // A visible edge, so a white note's white field doesn't vanish into it.
-                '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(0,0,0,0.3)', borderWidth: 1 },
-                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(0,0,0,0.5)' },
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: field.edge, borderWidth: 1 },
+                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: field.edgeHover },
                 '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#00BCD4', borderWidth: 1 },
               },
-              '& input': { fontSize: '0.95rem', py: 0.75, px: 1.5 },
+              '& input': { fontSize: '0.95rem', py: 0.75, px: 1.5, color: field.text },
             }}
           />
           {type === 'text' && !editing && (
@@ -660,7 +687,7 @@ export default function NoteEditorScreen() {
           )}
           <Box
             onClick={() => setColorPickerOpen(true)}
-            sx={{ width: 32, height: 32, flexShrink: 0, borderRadius: '4px', bgcolor: color.bg, border: `2px solid ${color.border}`, cursor: 'pointer' }}
+            sx={{ ...swatch, cursor: 'pointer' }}
           />
           <IconButton sx={{ color: color.text }} onClick={e => setMenuAnchor(e.currentTarget)}>
             <MoreVertIcon />
@@ -669,19 +696,32 @@ export default function NoteEditorScreen() {
       </AppBar>
 
       {/* Status line */}
-      <Box sx={{ px: 2, py: 0.5, bgcolor: color.bg, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <Box sx={{ px: 2, py: 0.5, bgcolor: color.bar, color: color.text, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
           <Typography variant="caption" sx={{ color: color.text, opacity: 0.6 }}>{editable ? 'Editing' : 'Viewing'}</Typography>
           {encrypted === 1 && <LockOpenIcon sx={{ fontSize: 12, color: color.text, opacity: 0.5 }} />}
         </Box>
-        <Typography variant="caption" sx={{ color: color.text, opacity: 0.6 }}>
-          {formatFullDate(modifiedAt)}
-        </Typography>
+        {noteId ? (
+          // Tap the date to change it (a new note has none to change yet).
+          <Box
+            component="button" type="button" aria-label="Change modified date"
+            onClick={() => setDatePickerOpen(true)}
+            sx={{
+              all: 'unset', cursor: 'pointer', color: color.text, opacity: 0.6, fontSize: '0.75rem', lineHeight: 1.66,
+              letterSpacing: '0.03333em', textDecoration: 'underline dotted', textUnderlineOffset: '3px',
+              '&:hover': { opacity: 1 }, '&:focus-visible': { outline: `2px solid ${color.border}`, opacity: 1 },
+            }}
+          >
+            {formatFullDate(modifiedAt)}
+          </Box>
+        ) : (
+          <Typography variant="caption" sx={{ color: color.text, opacity: 0.6 }}>{formatFullDate(modifiedAt)}</Typography>
+        )}
       </Box>
 
       {/* Find in note */}
       {finding && canFind && (
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1.5, height: 44, bgcolor: '#F2F2F2', color: '#555' }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1.5, height: 44, bgcolor: dark ? '#2C2C2C' : '#F2F2F2', color: dark ? '#BDBDBD' : '#555' }}>
           <SearchIcon sx={{ fontSize: 20 }} />
           <InputBase
             autoFocus fullWidth placeholder="Find in note" value={findQuery}
@@ -690,7 +730,7 @@ export default function NoteEditorScreen() {
               if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); }
               if (e.key === 'Escape') closeFind();
             }}
-            sx={{ fontSize: '0.95rem', color: '#111', borderBottom: '2px solid #009688', py: 0, mx: 0.5 }}
+            sx={{ fontSize: '0.95rem', color: dark ? '#F5F5F5' : '#111', borderBottom: '2px solid #009688', py: 0, mx: 0.5 }}
           />
           {findQuery && <Typography variant="body2" sx={{ minWidth: 36, textAlign: 'right' }}>{hits.length ? `${focusHit + 1}/${hits.length}` : '0'}</Typography>}
           <IconButton size="small" aria-label="Previous match" disabled={!hits.length} onClick={() => stepFind(-1)}><KeyboardArrowUpIcon /></IconButton>
@@ -717,6 +757,7 @@ export default function NoteEditorScreen() {
                       borderRadius: run.hit ? 2 : undefined,
                       fontWeight: run.styles.includes('b') ? 700 : undefined,
                       textDecoration: run.styles.includes('s') ? 'line-through' : undefined,
+                      color: run.hit || run.styles.includes('h') ? '#212121' : undefined,
                       background: run.hit === 2 ? '#FF9800' : run.hit === 1 ? '#FFCC80' : run.styles.includes('h') ? 'rgba(255,235,59,0.8)' : undefined,
                     }}>{run.text}</span>
                   ))}
@@ -734,7 +775,7 @@ export default function NoteEditorScreen() {
                   '& .MuiInput-root:before, & .MuiInput-root:after': { display: 'none' },
                   '& textarea': {
                     fontSize: '0.95rem', lineHeight: '2rem',
-                    background: `repeating-linear-gradient(transparent, transparent calc(2rem - 1px), rgba(0,0,0,0.06) calc(2rem - 1px), rgba(0,0,0,0.06) 2rem)`,
+                    background: `repeating-linear-gradient(transparent, transparent calc(2rem - 1px), ${ruleColor} calc(2rem - 1px), ${ruleColor} 2rem)`,
                     minHeight: 'calc(100vh - 160px)',
                     color: drawn ? 'transparent' : color.text, caretColor: '#00BCD4',
                   },
@@ -760,7 +801,7 @@ export default function NoteEditorScreen() {
         ) : (
           <Box sx={{ px: 1, pb: 4 }}>
             {items.map((item, idx) => (
-              <Box key={idx} sx={{ display: 'flex', alignItems: 'center', minHeight: 48, borderBottom: '1px solid rgba(0,0,0,0.05)' }}>
+              <Box key={idx} sx={{ display: 'flex', alignItems: 'center', minHeight: 48, borderBottom: `1px solid ${ruleColor}` }}>
                 <Checkbox
                   checked={item.checked} onChange={() => handleItemCheck(idx)} size="small"
                   sx={{ color: color.border, '&.Mui-checked': { color: color.border }, flexShrink: 0 }}
@@ -794,13 +835,13 @@ export default function NoteEditorScreen() {
       {type === 'text' && editing && (
         <Box sx={{
           position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 1100,
-          display: 'flex', gap: 0.5, p: 0.5, bgcolor: '#FFFFFF', borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.28)',
+          display: 'flex', gap: 0.5, p: 0.5, bgcolor: dark ? '#2C2C2C' : '#FFFFFF', borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.28)',
         }}>
           {[['Undo', UndoIcon, undo, history.current.past.length], ['Redo', RedoIcon, redo, history.current.future.length]].map(([label, Icon, act, count]) => (
             <IconButton
               key={label} size="small" aria-label={label} disabled={!count} disableRipple
               onMouseDown={e => e.preventDefault()} onClick={act}
-              sx={{ color: '#212121', '&.Mui-disabled': { color: 'rgba(0,0,0,0.3)' }, '&:hover': { bgcolor: 'transparent' } }}
+              sx={{ color: dark ? '#E0E0E0' : '#212121', '&.Mui-disabled': { color: dark ? 'rgba(255,255,255,0.3)' : 'rgba(0,0,0,0.3)' }, '&:hover': { bgcolor: 'transparent' } }}
             ><Icon fontSize="small" /></IconButton>
           ))}
           <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.75 }} />
@@ -816,7 +857,7 @@ export default function NoteEditorScreen() {
                 key={style} size="small" disableRipple aria-pressed={active}
                 aria-label={{ b: 'Bold', s: 'Strikethrough', h: 'Highlight' }[style]}
                 onMouseDown={e => e.preventDefault()} onClick={() => handleStyle(style)}
-                sx={{ minWidth: 40, color: '#212121', ...look, '&:hover': { ...look, bgcolor: look.background ? undefined : 'transparent' } }}
+                sx={{ minWidth: 40, color: dark ? '#E0E0E0' : '#212121', ...look, '&:hover': { ...look, bgcolor: look.background ? undefined : 'transparent' } }}
               >{label}</Button>
             );
           })}
@@ -826,6 +867,16 @@ export default function NoteEditorScreen() {
       {/* Color picker */}
       <ColorPicker open={colorPickerOpen} currentColor={colorIndex} onSelect={handleColorChange} onClose={() => setColorPickerOpen(false)} />
       <FolderPicker open={folderPickerOpen} current={folderId} onSelect={handleFolderChange} onClose={() => setFolderPickerOpen(false)} />
+      <DatePickerDialog open={datePickerOpen} value={modifiedAt} onPick={handleDatePicked} onClose={() => setDatePickerOpen(false)} />
+      {noteId && (
+        <VersionHistoryDialog
+          open={historyOpen}
+          noteId={noteId}
+          noteUuid={baseRef.current?.uuid}
+          onClose={() => setHistoryOpen(false)}
+          onRestored={() => { setLoading(true); setReloadTick(t => t + 1); }}
+        />
+      )}
 
       {/* Three-dot menu */}
       <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => setMenuAnchor(null)}>
@@ -846,6 +897,11 @@ export default function NoteEditorScreen() {
         <MenuItem onClick={handleCopy}>
           <ContentCopyIcon sx={{ mr: 1.5, fontSize: 20 }} /> Copy note
         </MenuItem>
+        {currentIdRef.current && (
+          <MenuItem onClick={async () => { setMenuAnchor(null); await flushSave(); setHistoryOpen(true); }}>
+            <HistoryIcon sx={{ mr: 1.5, fontSize: 20 }} /> Version history
+          </MenuItem>
+        )}
         {currentIdRef.current && (
           <MenuItem onClick={handleDuplicate}>
             <FileCopyOutlinedIcon sx={{ mr: 1.5, fontSize: 20 }} /> Duplicate

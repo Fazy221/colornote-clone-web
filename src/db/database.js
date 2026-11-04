@@ -34,6 +34,11 @@ db.version(3).stores({
   bases: 'uuid',
 });
 
+// Version history of each note (see utils/versions.js). `synced` is 0 until the cloud has the version.
+db.version(4).stores({
+  versions: 'id, noteUuid, [noteUuid+at], synced',
+});
+
 // Helper: get all notes in a state, sorted by modifiedAt desc
 export async function getNotesByState(state = 'normal') {
   return db.notes

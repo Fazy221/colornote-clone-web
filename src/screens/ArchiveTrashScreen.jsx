@@ -110,7 +110,7 @@ export function TrashScreen() {
 
       {/* Bottom action bar */}
       {notes.length > 0 && (
-        <Box sx={{ display: 'flex', borderTop: '1px solid rgba(0,0,0,0.1)', bgcolor: 'background.paper' }}>
+        <Box sx={{ display: 'flex', borderTop: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
           <Button
             fullWidth
             startIcon={<ArrowBackIcon />}

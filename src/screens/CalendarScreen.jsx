@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, Typography, IconButton,
-  Fab, Divider, Paper,
+  Fab, Divider, Paper, useTheme,
 } from '@mui/material';
 import ArrowBackIosIcon from '@mui/icons-material/ArrowBackIos';
 import ArrowForwardIosIcon from '@mui/icons-material/ArrowForwardIos';
@@ -11,6 +11,7 @@ import CalendarTodayIcon from '@mui/icons-material/CalendarToday';
 import EventIcon from '@mui/icons-material/Event';
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import BottomNav from '../components/layout/BottomNav';
+import DatePickerDialog from '../components/common/DatePickerDialog';
 import { db } from '../db/database';
 import { getColor } from '../utils/colors';
 import { formatCalendarDate } from '../utils/dateUtils';
@@ -40,12 +41,14 @@ function getFirstDayOfWeek(year, month) {
 
 export default function CalendarScreen() {
   const navigate = useNavigate();
+  const dark = useTheme().palette.mode === 'dark';
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
   const [selectedDate, setSelectedDate] = useState(null);
   const [notesOnDate, setNotesOnDate] = useState([]);
   const [dotMap, setDotMap] = useState({}); // { 'YYYY-MM-DD': [colorIndex,...] }
+  const [picking, setPicking] = useState(false);
 
   // Load all calendar notes for this month
   useEffect(() => {
@@ -127,7 +130,14 @@ export default function CalendarScreen() {
         {/* Month navigation */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 2, py: 1.5, bgcolor: 'background.paper' }}>
           <IconButton size="small" onClick={prevMonth}><ArrowBackIosIcon sx={{ fontSize: 14 }} /></IconButton>
-          <Typography variant="body1" sx={{ fontWeight: 500 }}>{MONTHS[month]} {year}</Typography>
+          {/* Opens the date picker, as the month title does on the phone. */}
+          <Typography
+            component="button" type="button" variant="body1" aria-label="Pick a month"
+            onClick={() => setPicking(true)}
+            sx={{ all: 'unset', cursor: 'pointer', fontWeight: 500, fontSize: '0.95rem', px: 1.5, py: 0.5, borderRadius: 1, '&:hover': { bgcolor: 'action.hover' }, '&:focus-visible': { outline: '2px solid #00BCD4' } }}
+          >
+            {MONTHS[month]} {year}
+          </Typography>
           <IconButton size="small" onClick={nextMonth}><ArrowForwardIosIcon sx={{ fontSize: 14 }} /></IconButton>
         </Box>
 
@@ -156,7 +166,7 @@ export default function CalendarScreen() {
         }}>
           {/* Empty cells for offset */}
           {Array.from({ length: firstDow }).map((_, i) => (
-            <Box key={`e-${i}`} sx={{ borderBottom: '1px solid rgba(0,0,0,0.04)', minHeight: 52 }} />
+            <Box key={`e-${i}`} sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 52 }} />
           ))}
 
           {Array.from({ length: daysInMonth }).map((_, i) => {
@@ -173,7 +183,7 @@ export default function CalendarScreen() {
                 onClick={() => handleDayPress(day)}
                 sx={{
                   minHeight: 52,
-                  borderBottom: '1px solid rgba(0,0,0,0.04)',
+                  borderBottom: 1, borderColor: 'divider',
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'flex-start',
@@ -221,7 +231,7 @@ export default function CalendarScreen() {
 
         {/* Notes panel for selected date */}
         {selectedDate && (
-          <Paper elevation={0} sx={{ mx: 0, mt: 0, borderTop: '1px solid rgba(0,0,0,0.1)' }}>
+          <Paper elevation={0} sx={{ mx: 0, mt: 0, borderTop: 1, borderColor: 'divider' }}>
             <Box sx={{ px: 2, py: 1.25, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <IconButton size="small" onClick={() => {
@@ -250,7 +260,7 @@ export default function CalendarScreen() {
               </Box>
             ) : (
               notesOnDate.map(note => {
-                const c = getColor(note.colorIndex);
+                const c = getColor(note.colorIndex, dark);
                 return (
                   <Box
                     key={note.id}
@@ -294,6 +304,14 @@ export default function CalendarScreen() {
       >
         <AddIcon />
       </Fab>
+
+      {/* Choosing a date only turns the calendar to that month, as on the phone: no day opens. */}
+      <DatePickerDialog
+        open={picking}
+        value={new Date(year, month, 1)}
+        onPick={({ year: y, month: m }) => { setYear(y); setMonth(m); }}
+        onClose={() => setPicking(false)}
+      />
 
       <BottomNav />
     </Box>
