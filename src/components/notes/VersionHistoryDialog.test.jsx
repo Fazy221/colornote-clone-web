@@ -12,6 +12,9 @@ vi.mock('../../store/noteStore', () => ({
   default: (sel) => sel({ restoreVersion: h.restore }),
 }));
 
+vi.mock('../../store/colorStore', () => ({ default: (sel) => sel({ colorNames: ['', 'Red'] }) }));
+vi.mock('../../store/folderStore', () => ({ default: (sel) => sel({ folders: [] }) }));
+
 import VersionHistoryDialog from './VersionHistoryDialog';
 
 const at = (d, hr) => new Date(2026, 10, d, hr, 0).getTime();
@@ -55,6 +58,18 @@ describe('VersionHistoryDialog', () => {
     open();
     expect(await screen.findByText(/Locked note, content not shown/)).toBeTruthy();
     expect(screen.queryByText(/U2FsdGVk/)).toBeNull();
+  });
+
+  it('opens a read-only preview of a version, which can lead to Restore', async () => {
+    open();
+    await screen.findByText('2 edits');
+    await userEvent.click(screen.getByRole('button', { name: /View 9:00 AM/ }));
+    const preview = (await screen.findByText('Read-only')).closest('[role="dialog"]');
+    expect(preview.querySelector('ins').textContent).toBe('b');
+    expect(preview.querySelector('del').textContent).toBe('c');
+    await userEvent.click(within(preview).getByRole('button', { name: 'Restore this version' }));
+    expect(await screen.findByText('Restore this version?')).toBeTruthy();
+    expect(h.restore).not.toHaveBeenCalled();
   });
 
   it('says so when there is no history yet', async () => {

@@ -75,6 +75,14 @@ export function groupByDay(versions) {
   return [...days].map(([day, list]) => ({ day, versions: list }));
 }
 
+// The version saved just before `version`, or null for the oldest. Used by the read-only preview
+// (versionDiff.js) to show what an edit changed.
+export function previousOf(versions, version) {
+  const older = versions.filter(v => v.at < version.at || (v.at === version.at && v.id < version.id));
+  if (!older.length) return null;
+  return older.reduce((a, b) => (b.at > a.at || (b.at === a.at && b.id > a.id) ? b : a));
+}
+
 const LABELS = {
   title: 'Title', note: 'Text', items: 'Checklist', type: 'Type', encrypted: 'Lock', format: 'Formatting',
   colorIndex: 'Colour', folderId: 'Folder', modifiedAt: 'Date',

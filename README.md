@@ -16,7 +16,8 @@ Things that already drifted once, so check them every time:
 - Dialogs that exist on one side only (the modified-date picker, the calendar's date picker).
 - Dark mode: every screen, including the note editor, dialogs, menus and inputs.
 - Rules that live in two places and carry a comment pointing at the other copy, so **change both**:
-  version history rules (`src/utils/versions.js` here, `NoteVersions.kt` there), the modified-date merge
+  version history rules (`src/utils/versions.js` here, `NoteVersions.kt` there), the read-only preview's diff
+  (`src/utils/versionDiff.js`, `VersionDiff.kt`), the modified-date merge
   (`src/sync/merge.js`, `SyncLogic.mergeNotes`), locked-note encryption (`src/utils/crypto.js`, `NoteCrypto.kt`,
   and `mcp-server/src/crypto.js`), colour tables.
 - The Firestore contract (`users/{uid}/notes/{uuid}`, `.../versions/{id}`, `meta/appSettings`).
@@ -44,11 +45,11 @@ npm run deploy   # build + firebase deploy --only hosting (owner only)
 | Path | What |
 |---|---|
 | `src/screens/` | One file per screen (notes, calendar, folders, note editor, settings...). |
-| `src/components/` | Shared UI: bottom nav, dialogs, note cards, `notes/VersionHistoryDialog.jsx`, `common/DatePickerDialog.jsx`. |
+| `src/components/` | Shared UI: bottom nav, dialogs, note cards, `notes/VersionHistoryDialog.jsx`, `notes/VersionPreviewDialog.jsx`, `common/DatePickerDialog.jsx`. |
 | `src/store/noteStore.js` | All note changes (zustand). The place to add a new action. |
 | `src/db/` | Dexie schema (`database.js`, v4 includes `versions`) and `versionLog.js` (recording versions). |
 | `src/sync/` | Firestore sync: `notesSync.js`, `merge.js`. |
-| `src/utils/` | `crypto.js` (locked notes), `versions.js` (history rules), `colors.js`. |
+| `src/utils/` | `crypto.js` (locked notes), `versions.js` (history rules), `versionDiff.js` (what the preview highlights), `colors.js`. |
 | `src/theme.js` | MUI light and dark themes. Check dark mode here first. |
 | `mcp-server/` | Read-only MCP server so Claude Code can read the diary, locked notes included. See [mcp-server/README.md](mcp-server/README.md). |
 
@@ -59,6 +60,13 @@ Every change to a note (title, text, colour, folder, the modified date) is kept 
 Edits on one device within 5 minutes join one version; at most 200 per note, the first "Original" is never pruned;
 locked notes keep ciphertext and show no preview. The Firestore rules must allow the owner to read and write the
 `versions` subcollection (snippet in `mcp-server/README.md`).
+
+**Read-only preview (Round 14, both apps):** each history row has a "View" button that opens
+`VersionPreviewDialog`: the old version with changes highlighted (added green, removed red and struck through,
+checklist rows added/removed/ticked, and a list of other changes: type, lock, colour, folder, modified date,
+formatting). Two comparisons: "What this edit changed" (against the version before) and "What Restore would
+change" (against the note now). Locked notes show no content. The diff is `src/utils/versionDiff.js`; the phone's
+copy is `VersionDiff.kt`, with the same test cases.
 
 ## MCP server
 

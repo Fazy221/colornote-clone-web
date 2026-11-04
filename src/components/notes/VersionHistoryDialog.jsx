@@ -9,7 +9,10 @@ import { db } from '../../db/database';
 import { listVersions } from '../../db/versionLog';
 import { pullVersions } from '../../sync/notesSync';
 import useNoteStore from '../../store/noteStore';
-import { changeLabels, groupByDay, restorePatch, versionPreview } from '../../utils/versions';
+import useColorStore from '../../store/colorStore';
+import useFolderStore from '../../store/folderStore';
+import { changeLabels, groupByDay, previousOf, restorePatch, versionPreview } from '../../utils/versions';
+import VersionPreviewDialog from './VersionPreviewDialog';
 import { formatFullDate } from '../../utils/dateUtils';
 
 // The version history of one note (utils/versions.js): a day per accordion, newest first, with what each
@@ -31,6 +34,9 @@ export default function VersionHistoryDialog({ open, noteId, noteUuid, onClose, 
   const [offline, setOffline] = useState(false);
   const [confirm, setConfirm] = useState(null);
   const [expanded, setExpanded] = useState(null);
+  const [viewing, setViewing] = useState(null);
+  const colorNames = useColorStore(s => s.colorNames);
+  const folders = useFolderStore(s => s.folders);
 
   const reload = async () => {
     setVersions(await listVersions(noteUuid));
@@ -41,7 +47,7 @@ export default function VersionHistoryDialog({ open, noteId, noteUuid, onClose, 
   useEffect(() => {
     if (!open || !noteUuid) return undefined;
     let live = true;
-    setLoading(true); setOffline(false); setExpanded(null);
+    setLoading(true); setOffline(false); setExpanded(null); setViewing(null);
     (async () => {
       await reload();
       if (!live) return;
@@ -114,6 +120,7 @@ export default function VersionHistoryDialog({ open, noteId, noteUuid, onClose, 
                           Modified date {formatFullDate(v.modifiedAt)}
                         </Typography>
                       </Box>
+                      <Button size="small" onClick={() => setViewing(v)} aria-label={`View ${timeOf(v.at)} on ${dayTitle(day)}`}>View</Button>
                       {isCurrent(v)
                         ? <Chip size="small" color="primary" label="Current" />
                         : <Button size="small" onClick={() => setConfirm(v)}>Restore</Button>}
@@ -130,6 +137,18 @@ export default function VersionHistoryDialog({ open, noteId, noteUuid, onClose, 
           )}
         </DialogContent>
       </Dialog>
+
+      <VersionPreviewDialog
+        open={Boolean(viewing)}
+        version={viewing}
+        previous={viewing ? previousOf(versions, viewing) : null}
+        current={current}
+        isCurrent={Boolean(viewing && isCurrent(viewing))}
+        colorNames={colorNames}
+        folders={folders}
+        onClose={() => setViewing(null)}
+        onRestore={(v) => { setViewing(null); setConfirm(v); }}
+      />
 
       <Dialog open={Boolean(confirm)} onClose={() => setConfirm(null)}>
         <DialogTitle>Restore this version?</DialogTitle>
