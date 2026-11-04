@@ -71,6 +71,29 @@ function confirm(key, seq) {
 export const confirmNote = (uuid, seq) => confirm(noteKey(uuid), seq);
 export const confirmSetting = (name, seq) => confirm(settingKey(name), seq);
 
+// After a merge with the cloud copy: `fields` are what still differs from the cloud. Made at `seq`;
+// if the note changed here since, those changes stay waiting too. Returns the entry left, or null.
+export function settleNote(uuid, seq, fields) {
+  return serial(async () => {
+    const key = noteKey(uuid);
+    const entry = await db.outbox.get(key);
+    if (!entry || entry.deleted) return entry || null;
+    if (entry.seq !== seq) {
+      if (entry.fields === null) return entry;
+      const next = { ...entry, fields: [...new Set([...entry.fields, ...fields])] };
+      await db.outbox.put(next);
+      return next;
+    }
+    if (!fields.length) {
+      await db.outbox.delete(key);
+      return null;
+    }
+    const next = { ...entry, fields: [...fields] };
+    await db.outbox.put(next);
+    return next;
+  });
+}
+
 // Nothing left to send for it (the note is gone everywhere).
 export const dropNote = (uuid) => serial(() => db.outbox.delete(noteKey(uuid)));
 

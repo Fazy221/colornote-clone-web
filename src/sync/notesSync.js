@@ -3,22 +3,27 @@
 // cloud mirror in sync with it, in both directions.
 //
 // Notes are keyed in Firestore by their `uuid` (not Dexie's local
-// auto-increment `id`, which is meaningless outside this device). Conflicts
-// are resolved last-write-wins by `modifiedAt` — reasonable for a single
-// person using one device at a time, not built for simultaneous editing.
+// auto-increment `id`, which is meaningless outside this device).
+//
+// The same rules as the phone (SyncLogic.kt):
+//  - A note with nothing waiting here takes the cloud copy as it is, whatever
+//    its date: trash, archive, pin and reminders don't change the date.
+//  - A note changed here that the cloud hasn't confirmed is merged field by
+//    field with the cloud copy (merge.js), using `bases`, the cloud copy as
+//    this device last saw it, to tell whose change is whose. Text edited on
+//    both sides keeps the newer version, and the other becomes a "[conflict]"
+//    note.
+//  - A note deleted here comes back if its text was changed elsewhere meanwhile.
+//    A note deleted elsewhere comes back if its text was changed here.
 //
 // Encrypted notes: `note` is already ciphertext by the time it reaches here
 // (see crypto.js) — this module just moves bytes, it doesn't add or remove
 // any encryption of its own.
 //
-// Two things last-write-wins on `modifiedAt` alone can't do, handled below:
-//  - Trash, archive, restore, pin, lock and unlock don't bump `modifiedAt`
-//    (on the web or on the phone), so a cloud copy with the SAME `modifiedAt`
-//    but different content/state fields is a newer change and is taken.
-//  - A note deleted on another device must not come back. Each browser keeps
-//    the uuids it has already synced with this account; one of those that is
-//    missing from the cloud was deleted elsewhere and is removed here, instead
-//    of being re-uploaded. Notes this browser never synced are still pushed.
+// A note deleted on another device must not come back. Each browser keeps
+// the uuids it has already synced with this account; one of those that is
+// missing from the cloud was deleted elsewhere and is removed here, instead
+// of being re-uploaded. Notes this browser never synced are still pushed.
 //
 // Pushes send only the fields that changed (updateDoc), like the phone does, so
 // a field changed elsewhere since this browser last heard of the note (a pin, a
@@ -38,11 +43,12 @@ import {
 } from 'firebase/firestore';
 import { db as firestoreDb } from '../firebase';
 import { db, getSetting, setSetting } from '../db/database';
-import { BUMP_FIELDS, CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
+import { BUMP_FIELDS, CONTENT_FIELDS, pick, sameContent, sameValue } from '../utils/noteFields';
 import {
-  recordNote, recordDeletion, recordSetting, confirmNote, confirmSetting, dropNote,
+  recordNote, recordDeletion, recordSetting, confirmNote, confirmSetting, dropNote, settleNote,
   pendingNotes, pendingSettings,
 } from './outbox';
+import { mergeNote, conflictCopy } from './merge';
 import { setSyncPhase } from './syncStatus';
 
 let unsubscribeNotes = null;
@@ -53,18 +59,38 @@ let retryTimer = null;
 let onlineHandler = null;
 let lastReplay = Promise.resolve();
 const RETRY_MS = 60_000;
-
-// Fields compared when the two copies have the same `modifiedAt`. The reminder
-// fields are here because the phone changes them without bumping `modifiedAt`.
-const SYNCED_FIELDS = [
-  'title', 'note', 'items', 'type', 'colorIndex', 'state', 'encrypted', 'folderId',
-  'importance', 'calendarDate', 'reminderType', 'reminderRepeat', 'tags', 'format',
-  'reminderTime', 'reminderRepeatEnds', 'reminderDismissedAt',
-];
+// uuid -> the values of the write sent and not yet confirmed, so the cloud echoing it back is not
+// mistaken for a change made elsewhere (the phone's inFlight).
+const inFlight = new Map();
 
 // True when the cloud copy differs in a field the cloud actually has.
-function contentDiffers(local, cloud) {
-  return SYNCED_FIELDS.some(f => f in cloud && !sameValue(cloud[f], local[f]));
+function differs(local, cloud) {
+  return Object.keys(cloud).some(f => f !== 'id' && !sameValue(cloud[f], local[f]));
+}
+
+const newUuid = () => crypto.randomUUID();
+
+// ─── Bases: each note as last seen in the cloud ────────────────────────────
+async function loadBases() {
+  return new Map((await db.bases.toArray()).map(b => [b.uuid, b.doc]));
+}
+
+// The cloud confirmed `sent` (the whole note when `whole`, else some of its fields).
+async function rememberSent(uuid, sent, whole) {
+  if (whole) { await db.bases.put({ uuid, doc: sent }); return; }
+  const old = await db.bases.get(uuid);
+  if (old) await db.bases.put({ uuid, doc: { ...old.doc, ...sent } });
+}
+
+// The base to merge against, counting a write of ours the cloud is echoing back as already seen.
+function baseWithOwnWrite(uuid, base, remote) {
+  const sent = inFlight.get(uuid);
+  if (!sent) return base;
+  const echoed = Object.keys(sent).filter(f => sameValue(remote[f], sent[f]));
+  if (!base) return echoed.length === Object.keys(sent).length && CONTENT_FIELDS.every(f => f in sent) ? remote : null;
+  const b = { ...base };
+  for (const f of echoed) b[f] = remote[f];
+  return b;
 }
 
 // ─── Per-browser record of uuids already synced with this account ──────────
@@ -113,12 +139,15 @@ export async function pushNote(note, fields) {
 // The promise settles only when the cloud confirms, which offline can be much later.
 async function sendNote(uid, note, fields, seq) {
   const ref = doc(firestoreDb, 'users', uid, 'notes', note.uuid);
+  let whole = !fields;
+  let sent = whole ? toCloudDoc(note) : pick(note, fields);
+  inFlight.set(note.uuid, sent);
   try {
-    if (!fields) {
-      await setDoc(ref, toCloudDoc(note), { merge: true });
+    if (whole) {
+      await setDoc(ref, sent, { merge: true });
     } else {
       try {
-        await updateDoc(ref, pick(note, fields));
+        await updateDoc(ref, sent);
       } catch (e) {
         if (e?.code !== 'not-found') throw e;
         // Deleted elsewhere meanwhile. Text edited here is the only copy left,
@@ -127,14 +156,20 @@ async function sendNote(uid, note, fields, seq) {
           await confirmNote(note.uuid, seq);
           return;
         }
-        await setDoc(ref, toCloudDoc(note), { merge: true });
+        whole = true;
+        sent = toCloudDoc(note);
+        inFlight.set(note.uuid, sent);
+        await setDoc(ref, sent, { merge: true });
       }
     }
+    await rememberSent(note.uuid, sent, whole);
     markSynced(uid, note.uuid);
     await confirmNote(note.uuid, seq);
   } catch (e) {
     // Stays in the outbox, and goes out again the next time sync starts.
     console.error('Note upload failed, kept for later:', e?.code || e?.name);
+  } finally {
+    if (inFlight.get(note.uuid) === sent) inFlight.delete(note.uuid);
   }
 }
 
@@ -149,6 +184,7 @@ export async function pushNoteDeletion(uuid) {
 async function sendDeletion(uid, uuid, seq) {
   try {
     await deleteDoc(doc(firestoreDb, 'users', uid, 'notes', uuid));
+    await db.bases.delete(uuid);
     await confirmNote(uuid, seq);
   } catch (e) {
     console.error('Note deletion failed, kept for later:', e?.code || e?.name);
@@ -175,17 +211,52 @@ async function replayPending(uid) {
 export const syncSettled = () => lastReplay;
 
 // ─── Notes: pull (cloud → local) ───────────────────────────────────────────
-async function upsertLocalNoteFromCloud(uuid, cloudData) {
-  const existing = await db.notes.where('uuid').equals(uuid).first();
-  if (existing) {
-    const cloudAt = cloudData.modifiedAt || 0;
-    const localAt = existing.modifiedAt || 0;
-    if (cloudAt > localAt || (cloudAt === localAt && contentDiffers(existing, cloudData))) {
-      await db.notes.update(existing.id, cloudData);
-    }
-  } else {
-    await db.notes.add({ uuid, ...cloudData });
+// Takes in one note's cloud copy. `entry` is what is waiting in the outbox for it, `base` the cloud
+// copy as last seen here. Returns false when the note stays deleted here.
+async function applyCloudNote(uid, uuid, remote, entry, base) {
+  const local = await db.notes.where('uuid').equals(uuid).first();
+
+  if (entry?.deleted) {
+    // Deleted here, and the cloud doesn't know yet. Text changed elsewhere since beats the deletion:
+    // never throw away writing nobody here has seen.
+    if (!base || sameContent(remote, base)) return false;
+    await dropNote(uuid);
+    if (!local) await db.notes.add({ uuid, ...remote });
+    return true;
   }
+
+  if (!local) {
+    await db.notes.add({ uuid, ...remote });
+    return true;
+  }
+
+  if (!entry) {
+    // Nothing waiting here: the cloud copy is taken as it is, whatever its date.
+    if (differs(local, remote)) await db.notes.update(local.id, remote);
+    return true;
+  }
+
+  const { merged, loser, send } = mergeNote({ base, local, remote, pending: entry.fields });
+  const changes = Object.fromEntries(Object.entries(merged)
+    .filter(([f, v]) => f !== 'id' && !sameValue(v, local[f])));
+  if (Object.keys(changes).length) await db.notes.update(local.id, changes);
+  const left = await settleNote(uuid, entry.seq, send);
+
+  let copy = null;
+  if (loser) {
+    copy = conflictCopy(loser, newUuid());
+    copy = { ...copy, id: await db.notes.add(copy) };
+  }
+  const copyWaiting = copy ? await recordNote(copy.uuid, null) : null;
+  if (ready && uid === currentUid) {
+    // Live: send now what the merge left. At the start, the outbox replay sends it.
+    if (left) {
+      const now = await db.notes.where('uuid').equals(uuid).first();
+      if (now) sendNote(uid, now, left.fields, left.seq);
+    }
+    if (copy) sendNote(uid, copy, null, copyWaiting.seq);
+  }
+  return true;
 }
 
 async function removeLocalNoteByUuid(uuid) {
@@ -198,10 +269,11 @@ async function removeLocalNoteByUuid(uuid) {
 // sync existed, like your laptop with the 1,784 imported notes (push
 // whatever the cloud doesn't have yet, or only has an older copy of).
 async function performInitialReconciliation(uid) {
-  const [localNotes, remoteSnapshot, pending] = await Promise.all([
+  const [localNotes, remoteSnapshot, pending, bases] = await Promise.all([
     db.notes.toArray(),
     getDocsFromServer(collection(firestoreDb, 'users', uid, 'notes')),
     pendingNotes(),
+    loadBases(),
   ]);
   if (uid !== currentUid) return;
 
@@ -219,11 +291,10 @@ async function performInitialReconciliation(uid) {
     const remote = remoteByUuid.get(local.uuid);
     const waiting = pending.get(local.uuid);
     if (waiting && !waiting.deleted) {
-      // Changed here, and the cloud never confirmed it: those fields go out
-      // after this loop. Everything else is taken from the cloud.
-      if (remote && waiting.fields) {
-        const theirs = Object.fromEntries(Object.entries(remote).filter(([k]) => !waiting.fields.includes(k)));
-        await db.notes.update(local.id, theirs);
+      // Changed here, and the cloud never confirmed it: merged with the cloud
+      // copy, and what is still ours goes out after this loop.
+      if (remote) {
+        await applyCloudNote(uid, local.uuid, remote, waiting, bases.get(local.uuid) || null);
         synced.add(local.uuid);
       } else if (!remote && cloudIsAuthoritative && synced.has(local.uuid)
         && waiting.fields && !waiting.fields.some(f => CONTENT_FIELDS.includes(f))) {
@@ -241,9 +312,10 @@ async function performInitialReconciliation(uid) {
       synced.delete(local.uuid);
     } else if (!remote) {
       toPush.push([local, null]);
-    } else if ((local.modifiedAt || 0) > (remote.modifiedAt || 0)
+    } else if (!bases.has(local.uuid) && (local.modifiedAt || 0) > (remote.modifiedAt || 0)
       && BUMP_FIELDS.some(f => f in local && !sameValue(local[f], remote[f]))) {
-      // An edit made here that the cloud never got. Only content, colour and
+      // Only before this browser recorded the cloud copies, so only once: an
+      // edit made here, before the outbox existed, that the cloud never got. Only content, colour and
       // folder bump modifiedAt, so only those are sent; state, pin, calendar
       // date and reminders are taken from the cloud, where the phone changes
       // them without a new date. A newer date with nothing different to send
@@ -256,9 +328,7 @@ async function performInitialReconciliation(uid) {
       // Cloud is the same age or newer, or holds the same content under an
       // older date (the live listener would catch most of this too, but
       // doing it here keeps startup deterministic).
-      if ((remote.modifiedAt || 0) !== (local.modifiedAt || 0) || contentDiffers(local, remote)) {
-        await db.notes.update(local.id, remote);
-      }
+      if (differs(local, remote)) await db.notes.update(local.id, remote);
       synced.add(local.uuid);
     }
     remoteByUuid.delete(local.uuid);
@@ -276,11 +346,18 @@ async function performInitialReconciliation(uid) {
   // Whatever's left exists in the cloud but not on this device — pull it down,
   // unless it was deleted here while offline (the outbox deletes it there too).
   for (const [uuid, remote] of remoteByUuid) {
-    if (pending.get(uuid)?.deleted) continue;
-    await upsertLocalNoteFromCloud(uuid, remote);
-    synced.add(uuid);
+    const kept = await applyCloudNote(uid, uuid, remote, pending.get(uuid), bases.get(uuid) || null);
+    if (kept) synced.add(uuid);
   }
   saveSynced(uid, synced);
+
+  // What the cloud holds now becomes the base for the next merge.
+  if (cloudIsAuthoritative) await db.bases.clear();
+  await db.bases.bulkPut(remoteSnapshot.docs.map(d => ({ uuid: d.id, doc: d.data() })));
+  for (const [local, fields] of toPush) {
+    const remote = remoteSnapshot.docs.find(d => d.id === local.uuid)?.data();
+    await db.bases.put({ uuid: local.uuid, doc: fields ? { ...remote, ...pick(local, fields) } : toCloudDoc(local) });
+  }
 }
 
 // Live listener — keeps this device caught up after the initial sync,
@@ -292,19 +369,34 @@ function attachNotesListener(uid) {
     const changes = snapshot.docChanges();
     if (!changes.length) return;
     const synced = loadSynced(uid);
-    await Promise.all(changes.map(async (change) => {
+    const pending = await pendingNotes();
+    for (const change of changes) {
       const uuid = change.doc.id;
+      const entry = pending.get(uuid);
       if (change.type === 'removed') {
-        await removeLocalNoteByUuid(uuid);
+        await db.bases.delete(uuid);
         synced.delete(uuid);
+        const local = await db.notes.where('uuid').equals(uuid).first();
+        if (local && entry && !entry.deleted
+          && (entry.fields === null || entry.fields.some(f => CONTENT_FIELDS.includes(f)))) {
+          // Deleted elsewhere, but its text was changed here: it comes back, whole.
+          const waiting = await recordNote(uuid, null);
+          sendNote(uid, local, null, waiting.seq);
+        } else {
+          await removeLocalNoteByUuid(uuid);
+          if (entry) await dropNote(uuid);
+        }
       } else if (change.doc.metadata?.hasPendingWrites) {
         // Echo of this browser's own write that the server hasn't confirmed:
         // local is already the newer truth, nothing to take.
       } else {
-        await upsertLocalNoteFromCloud(uuid, change.doc.data());
-        synced.add(uuid);
+        const remote = change.doc.data();
+        const base = baseWithOwnWrite(uuid, (await db.bases.get(uuid))?.doc || null, remote);
+        const kept = await applyCloudNote(uid, uuid, remote, entry, base);
+        await db.bases.put({ uuid, doc: remote });
+        if (kept) synced.add(uuid);
       }
-    }));
+    }
     saveSynced(uid, synced);
     const { default: useNoteStore } = await import('../store/noteStore');
     useNoteStore.getState().loadNotes(useNoteStore.getState().activeState);
@@ -427,5 +519,6 @@ export function stopSync() {
   unsubscribeNotes = null;
   currentUid = null;
   ready = false;
+  inFlight.clear();
   setSyncPhase('off');
 }

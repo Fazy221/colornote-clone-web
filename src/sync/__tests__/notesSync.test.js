@@ -17,6 +17,9 @@ const h = vi.hoisted(() => ({
   online: true,
   failWrites: null,
   serverReads: 0,
+  bases: new Map(),
+  gate: null,
+  held: 0,
 }));
 
 // A write the cloud refuses (offline mid-way, say), when a test sets h.failWrites to an error code.
@@ -49,12 +52,20 @@ vi.mock('../../db/database', () => ({
       delete: async (key) => { h.outbox.delete(key); },
       toArray: async () => [...h.outbox.values()].map(e => ({ ...e })),
     },
+    bases: {
+      get: async (uuid) => (h.bases.has(uuid) ? { uuid, doc: { ...h.bases.get(uuid) } } : undefined),
+      put: async (row) => { h.bases.set(row.uuid, { ...row.doc }); },
+      delete: async (uuid) => { h.bases.delete(uuid); },
+      toArray: async () => [...h.bases].map(([uuid, doc]) => ({ uuid, doc: { ...doc } })),
+      clear: async () => { h.bases.clear(); },
+      bulkPut: async (rows) => { for (const r of rows) h.bases.set(r.uuid, { ...r.doc }); },
+    },
     notes: {
       toArray: async () => h.local.map(n => ({ ...n })),
       where: () => ({
         equals: (uuid) => ({ first: async () => h.local.find(n => n.uuid === uuid) }),
       }),
-      add: async (n) => { h.local.push({ id: h.nextId++, ...n }); },
+      add: async (n) => { const id = h.nextId++; h.local.push({ id, ...n }); return id; },
       update: async (id, changes) => Object.assign(h.local.find(n => n.id === id), changes),
       delete: async (id) => { h.local = h.local.filter(n => n.id !== id); },
     },
@@ -86,6 +97,7 @@ vi.mock('firebase/firestore', () => ({
   },
   updateDoc: async (ref, data) => {
     maybeFail();
+    if (h.gate) { h.held++; await h.gate; }
     if (!h.remote.has(ref.id)) throw Object.assign(new Error('gone'), { code: 'not-found' });
     h.updates.push([ref.id, data]);
     write(ref.id, data, { merge: true });
@@ -121,6 +133,9 @@ const emit = async (...changes) => h.listener({ docChanges: () => changes });
 const phase = () => useSyncStatus.getState().phase;
 const waitingFor = (uuid) => h.outbox.get(`note:${uuid}`);
 const markSyncedBefore = (...uuids) => localStorage.setItem(`colornote.synced.${UID}`, JSON.stringify(uuids));
+// The cloud copy as this browser last saw it.
+const seenBefore = (n) => h.bases.set(n.uuid, { ...n });
+const conflictCopies = () => h.local.filter(n => n.title?.startsWith('[conflict] '));
 // Comes back online and waits until sync is live and what was waiting has gone out.
 const goOnline = async () => {
   h.online = true;
@@ -137,6 +152,7 @@ beforeEach(() => {
     setDocs: [], updates: [], batchSets: [], deleted: [],
     outbox: new Map(), settings: new Map(), remoteSettings: null,
     online: true, failWrites: null, serverReads: 0,
+    bases: new Map(), gate: null, held: 0,
   });
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, get: () => h.online });
 });
@@ -401,12 +417,14 @@ describe('working offline', () => {
     // Made in an earlier visit, before the app was closed offline: only the outbox remembers it.
     addLocal(note('a', { note: 'edited offline', modifiedAt: 3000 }));
     await recordNote('a', ['note', 'modifiedAt']);
+    seenBefore(note('a'));
     h.remote.set('a', note('a', { importance: 1 }));
     await startSync(UID);
     await syncSettled();
     expect(h.remote.get('a')).toMatchObject({ note: 'edited offline', modifiedAt: 3000, importance: 1 });
     expect(localByUuid('a')).toMatchObject({ note: 'edited offline', importance: 1 });
     expect(waitingFor('a')).toBeUndefined();
+    expect(conflictCopies()).toEqual([]);
   });
 
   it('keeps a pin made offline, though the cloud copy has the same date', async () => {
@@ -472,5 +490,190 @@ describe('working offline', () => {
     expect(h.settings.get('fontSize')).toBe('large');
     expect(h.remoteSettings).toMatchObject({ darkMode: true, fontSize: 'large' });
     expect(h.outbox.size).toBe(0);
+  });
+});
+
+describe('merging with changes made on the phone', () => {
+  it('keeps both versions when the text was edited on both sides, the newer one in the note', async () => {
+    seenBefore(note('a'));
+    addLocal(note('a', { note: 'edited here', modifiedAt: 3000 }));
+    await recordNote('a', ['note', 'modifiedAt']);
+    h.remote.set('a', note('a', { note: 'edited on the phone', modifiedAt: 4000 }));
+    await startSync(UID);
+    await syncSettled();
+
+    expect(localByUuid('a')).toMatchObject({ note: 'edited on the phone', modifiedAt: 4000 });
+    expect(h.remote.get('a').note).toBe('edited on the phone');
+    const copies = conflictCopies();
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatchObject({ title: '[conflict] Invented a', note: 'edited here' });
+    expect(copies[0].uuid).not.toBe('a');
+    expect(h.remote.get(copies[0].uuid)).toMatchObject({ title: '[conflict] Invented a', note: 'edited here' });
+    expect(h.outbox.size).toBe(0);
+  });
+
+  it('keeps the text edited here in the note when it is the newer one', async () => {
+    seenBefore(note('a'));
+    addLocal(note('a', { note: 'edited here', modifiedAt: 5000 }));
+    await recordNote('a', ['note', 'modifiedAt']);
+    h.remote.set('a', note('a', { note: 'edited on the phone', modifiedAt: 4000 }));
+    await startSync(UID);
+    await syncSettled();
+
+    expect(localByUuid('a')).toMatchObject({ note: 'edited here', modifiedAt: 5000 });
+    expect(h.remote.get('a')).toMatchObject({ note: 'edited here', modifiedAt: 5000 });
+    expect(conflictCopies().map(n => n.note)).toEqual(['edited on the phone']);
+  });
+
+  it('a pin made here and a text edit made on the phone both stay, with no copy', async () => {
+    seenBefore(note('a'));
+    addLocal(note('a', { importance: 1 }));
+    await recordNote('a', ['importance']);
+    h.remote.set('a', note('a', { note: 'edited on the phone', modifiedAt: 3000 }));
+    await startSync(UID);
+    await syncSettled();
+
+    expect(localByUuid('a')).toMatchObject({ importance: 1, note: 'edited on the phone', modifiedAt: 3000 });
+    expect(h.remote.get('a')).toMatchObject({ importance: 1, note: 'edited on the phone' });
+    expect(conflictCopies()).toEqual([]);
+    expect(h.outbox.size).toBe(0);
+  });
+
+  it('a colour changed on both sides takes the newer one, with no copy', async () => {
+    seenBefore(note('a'));
+    addLocal(note('a', { colorIndex: 2, modifiedAt: 3000 }));
+    await recordNote('a', ['colorIndex', 'modifiedAt']);
+    h.remote.set('a', note('a', { colorIndex: 5, modifiedAt: 4000 }));
+    await startSync(UID);
+    await syncSettled();
+
+    expect(localByUuid('a')).toMatchObject({ colorIndex: 5, modifiedAt: 4000 });
+    expect(h.remote.get('a').colorIndex).toBe(5);
+    expect(conflictCopies()).toEqual([]);
+    expect(h.outbox.size).toBe(0);
+  });
+
+  it('keeps both versions when it cannot tell who changed the text (first sync after this update)', async () => {
+    addLocal(note('a', { note: 'edited here', modifiedAt: 3000 }));
+    await recordNote('a', ['note', 'modifiedAt']);
+    h.remote.set('a', note('a', { note: 'other text', modifiedAt: 2000 }));
+    await startSync(UID);
+    await syncSettled();
+
+    expect(localByUuid('a').note).toBe('edited here');
+    expect(conflictCopies().map(n => n.note)).toEqual(['other text']);
+  });
+
+  it('a note with nothing waiting here takes the cloud copy, even with an older date', async () => {
+    seenBefore(note('a', { modifiedAt: 3000 }));
+    addLocal(note('a', { modifiedAt: 3000 }));
+    h.remote.set('a', note('a', { note: 'restored on the phone', modifiedAt: 2500 }));
+    await startSync(UID);
+
+    expect(localByUuid('a')).toMatchObject({ note: 'restored on the phone', modifiedAt: 2500 });
+    expect(h.batchSets).toEqual([]);
+  });
+
+  it('remembers what the cloud holds, for the next merge', async () => {
+    addLocal(note('a'));
+    h.remote.set('a', note('a', { importance: 1 }));
+    await startSync(UID);
+    expect(h.bases.get('a')).toMatchObject({ importance: 1 });
+
+    await emit(change('modified', 'a', note('a', { state: 'archived' })));
+    expect(h.bases.get('a')).toMatchObject({ state: 'archived' });
+  });
+
+  it('its own write coming back from the cloud is not mistaken for an edit made elsewhere', async () => {
+    addLocal(note('a'));
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+
+    let release;
+    h.gate = new Promise((r) => { release = r; });
+    Object.assign(localByUuid('a'), { note: 'edited here', modifiedAt: 3000 });
+    const sending = pushNote({ ...localByUuid('a') }, ['note', 'modifiedAt']);
+    await vi.waitFor(() => expect(h.held).toBe(1));
+
+    // Typing goes on while the first save is on its way, and then the cloud reports that save.
+    Object.assign(localByUuid('a'), { note: 'edited here, and more', modifiedAt: 3100 });
+    await recordNote('a', ['note', 'modifiedAt']);
+    await emit(change('modified', 'a', note('a', { note: 'edited here', modifiedAt: 3000 })));
+
+    release();
+    await sending;
+    await vi.waitFor(() => expect(h.remote.get('a').note).toBe('edited here, and more'));
+    expect(localByUuid('a').note).toBe('edited here, and more');
+    expect(conflictCopies()).toEqual([]);
+    await vi.waitFor(() => expect(h.outbox.size).toBe(0));
+  });
+
+  it('a text edit on the phone brings back a note deleted here before the cloud heard of it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    addLocal(note('a'));
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+
+    h.failWrites = 'unavailable';
+    h.local = [];
+    await pushNoteDeletion('a');
+    expect(waitingFor('a')).toMatchObject({ deleted: true });
+    h.failWrites = null;
+
+    await emit(change('modified', 'a', note('a', { note: 'edited on the phone', modifiedAt: 3000 })));
+    expect(localByUuid('a')).toMatchObject({ note: 'edited on the phone' });
+    expect(waitingFor('a')).toBeUndefined();
+  });
+
+  it('a pin on the phone does not bring back a note deleted here', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    addLocal(note('a'));
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+
+    h.failWrites = 'unavailable';
+    h.local = [];
+    await pushNoteDeletion('a');
+    h.failWrites = null;
+
+    await emit(change('modified', 'a', note('a', { importance: 1 })));
+    expect(localByUuid('a')).toBeUndefined();
+    expect(waitingFor('a')).toMatchObject({ deleted: true });
+  });
+
+  it('text edited here brings back a note the phone deletes meanwhile', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    addLocal(note('a'));
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+
+    h.failWrites = 'unavailable';
+    Object.assign(localByUuid('a'), { note: 'edited here', modifiedAt: 3000 });
+    await pushNote({ ...localByUuid('a') }, ['note', 'modifiedAt']);
+    h.failWrites = null;
+
+    h.remote.delete('a');
+    await emit(change('removed', 'a', note('a')));
+    expect(localByUuid('a')).toBeDefined();
+    await vi.waitFor(() => expect(h.remote.get('a')).toMatchObject({ note: 'edited here' }));
+    await vi.waitFor(() => expect(waitingFor('a')).toBeUndefined());
+  });
+
+  it('a note only pinned here is removed when the phone deletes it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    addLocal(note('a'));
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+
+    h.failWrites = 'unavailable';
+    Object.assign(localByUuid('a'), { importance: 1 });
+    await pushNote({ ...localByUuid('a') }, ['importance']);
+    h.failWrites = null;
+
+    h.remote.delete('a');
+    await emit(change('removed', 'a', note('a')));
+    expect(localByUuid('a')).toBeUndefined();
+    expect(waitingFor('a')).toBeUndefined();
+    expect(h.bases.has('a')).toBe(false);
   });
 });

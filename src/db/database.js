@@ -28,6 +28,12 @@ db.version(2).stores({
   outbox: 'key',
 });
 
+// Each note as this device last saw it in the cloud, { uuid, doc }, like the phone's base column. A
+// merge compares with it to tell what changed in the cloud from what changed here (see sync/merge.js).
+db.version(3).stores({
+  bases: 'uuid',
+});
+
 // Helper: get all notes in a state, sorted by modifiedAt desc
 export async function getNotesByState(state = 'normal') {
   return db.notes
