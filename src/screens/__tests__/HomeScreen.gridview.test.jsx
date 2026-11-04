@@ -51,6 +51,7 @@ vi.mock('../../db/database', () => ({
 
 // The sync icon reads the outbox from IndexedDB, which these tests don't have.
 vi.mock('../../components/layout/SyncStatus', () => ({ default: () => null }));
+vi.mock('../../components/layout/ConflictsButton', () => ({ default: () => null }));
 
 import HomeScreen from '../HomeScreen';
 

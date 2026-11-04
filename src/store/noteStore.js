@@ -4,6 +4,7 @@ import { pushNote, pushNoteDeletion, syncSetting } from '../sync/notesSync';
 import { BUMP_FIELDS, planEditorSave, sameValue } from '../utils/noteFields';
 import { ENDED_REMINDER, hasLiveReminder } from '../utils/reminders';
 import { noteFromFile, planImport } from '../utils/importPlan';
+import { planResolution } from '../utils/conflicts';
 
 const ENDED_FIELDS = ['state', ...Object.keys(ENDED_REMINDER)];
 
@@ -120,6 +121,14 @@ const useNoteStore = create((set, get) => ({
     pushNote(await db.notes.get(id), ['state']);
   },
 
+  // A choice made on the conflicts screen (see planResolution in utils/conflicts.js). Each step is an
+  // ordinary edit, synced like any other.
+  resolveConflict: async (original, copy, choice) => {
+    const { updates, trash } = planResolution(original, copy, choice);
+    for (const u of updates) await get().updateNote(u.id, u.changes);
+    for (const id of trash) await get().trashNote(id);
+  },
+
   // Permanently delete
   deleteNotePermanently: async (id) => {
     const note = await db.notes.get(id);
@@ -132,7 +141,7 @@ const useNoteStore = create((set, get) => ({
   duplicateNote: async (id) => {
     const original = await db.notes.get(id);
     if (!original) return;
-    const { id: _id, uuid: _uuid, legacyId: _legacyId, ...rest } = original;
+    const { id: _id, uuid: _uuid, legacyId: _legacyId, conflictOf: _conflictOf, ...rest } = original;
     const now = Date.now();
     const newId = await db.notes.add({ ...rest, uuid: crypto.randomUUID(), createdAt: now, modifiedAt: now });
     await get().loadNotes('normal');

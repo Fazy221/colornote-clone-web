@@ -66,8 +66,9 @@ export function mergeNote({ base, local, remote, pending }) {
   return { merged, loser, send };
 }
 
-// The note kept when both sides edited the text: the losing version, as a new note.
-export function conflictCopy(loser, uuid) {
+// The note kept when both sides edited the text: the losing version, as a new note that names the
+// note it came from (conflictOf), for the review screen. The phone ignores fields it doesn't know.
+export function conflictCopy(loser, uuid, originalUuid) {
   const { id: _id, ...rest } = loser;
-  return { ...rest, uuid, title: `[conflict] ${loser.title || ''}` };
+  return { ...rest, uuid, title: `[conflict] ${loser.title || ''}`, conflictOf: originalUuid };
 }

@@ -17,6 +17,7 @@ import { MoreScreen } from './screens/MoreScreen';
 import { ArchiveScreen, TrashScreen } from './screens/ArchiveTrashScreen';
 import ImportScreen from './screens/ImportScreen';
 import SettingsScreen from './screens/SettingsScreen';
+import ConflictsScreen from './screens/ConflictsScreen';
 
 export default function App() {
   const darkMode = useUIStore(s => s.darkMode);
@@ -112,6 +113,7 @@ export default function App() {
           <Route path="/trash"      element={<TrashScreen />} />
           <Route path="/import"     element={<ImportScreen />} />
           <Route path="/settings"   element={<SettingsScreen />} />
+          <Route path="/conflicts"  element={<ConflictsScreen />} />
         </Routes>
       </BrowserRouter>
     </ThemeProvider>

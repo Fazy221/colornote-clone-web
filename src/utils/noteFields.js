@@ -58,7 +58,7 @@ export function planEditorSave({ base, edited, current, now, newUuid }) {
     Object.assign(changes, pick(edited, CONTENT_FIELDS));
     if (!sameContent(current, base)) {
       const { id: _id, ...rest } = current;
-      conflictCopy = { ...rest, uuid: newUuid(), title: `[conflict] ${current.title || ''}` };
+      conflictCopy = { ...rest, uuid: newUuid(), title: `[conflict] ${current.title || ''}`, conflictOf: current.uuid };
     }
   }
   for (const f of ['colorIndex', 'folderId']) {

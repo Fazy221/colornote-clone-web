@@ -244,7 +244,7 @@ async function applyCloudNote(uid, uuid, remote, entry, base) {
 
   let copy = null;
   if (loser) {
-    copy = conflictCopy(loser, newUuid());
+    copy = conflictCopy(loser, newUuid(), uuid);
     copy = { ...copy, id: await db.notes.add(copy) };
   }
   const copyWaiting = copy ? await recordNote(copy.uuid, null) : null;

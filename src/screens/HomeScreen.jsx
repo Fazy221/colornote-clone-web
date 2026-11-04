@@ -30,6 +30,7 @@ import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ColorFilterDialog from '../components/common/ColorFilterDialog';
 import BottomNav from '../components/layout/BottomNav';
 import SyncStatus from '../components/layout/SyncStatus';
+import ConflictsButton from '../components/layout/ConflictsButton';
 import { NOTE_COLORS } from '../utils/colors';
 import { ARCHIVE_QUESTION } from '../utils/reminders';
 import useNoteStore from '../store/noteStore';
@@ -264,6 +265,7 @@ export default function HomeScreen() {
             </Box>
 
             <SyncStatus />
+            <ConflictsButton />
 
             {/* Color filter — single icon opens the full Color modal (all 10
                 colors, filter/rename/counts), replacing the old always-visible

@@ -46,7 +46,7 @@ describe('planEditorSave', () => {
     const current = stored({ note: 'edited on the phone', modifiedAt: 8000 });
     const { changes, conflictCopy } = plan(base, held(base, { note: 'edited here' }), current);
     expect(changes.note).toBe('edited here');
-    expect(conflictCopy).toMatchObject({ title: '[conflict] Invented title', note: 'edited on the phone', modifiedAt: 8000 });
+    expect(conflictCopy).toMatchObject({ title: '[conflict] Invented title', note: 'edited on the phone', modifiedAt: 8000, conflictOf: 'u-1' });
     expect(conflictCopy.uuid).not.toBe('u-1');
     expect(conflictCopy.id).toBeUndefined();
   });

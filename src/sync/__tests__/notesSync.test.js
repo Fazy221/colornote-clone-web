@@ -506,7 +506,7 @@ describe('merging with changes made on the phone', () => {
     expect(h.remote.get('a').note).toBe('edited on the phone');
     const copies = conflictCopies();
     expect(copies).toHaveLength(1);
-    expect(copies[0]).toMatchObject({ title: '[conflict] Invented a', note: 'edited here' });
+    expect(copies[0]).toMatchObject({ title: '[conflict] Invented a', note: 'edited here', conflictOf: 'a' });
     expect(copies[0].uuid).not.toBe('a');
     expect(h.remote.get(copies[0].uuid)).toMatchObject({ title: '[conflict] Invented a', note: 'edited here' });
     expect(h.outbox.size).toBe(0);
