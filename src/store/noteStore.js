@@ -151,6 +151,27 @@ const useNoteStore = create((set, get) => ({
     (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
   },
 
+  // Folder changes bump modifiedAt, like on the phone, so the other side
+  // takes the newer copy.
+  setFolderForNotes: async (ids, folderId) => {
+    if (!ids.length) return;
+    await db.notes.where('id').anyOf(ids).modify({ folderId, modifiedAt: Date.now() });
+    await get().loadNotes(get().activeState);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
+  },
+
+  // Deleting a folder keeps its notes; they just belong to no folder any more.
+  clearFolder: async (folderId) => {
+    const ids = await db.notes.where('folderId').equals(folderId).primaryKeys();
+    await get().setFolderForNotes(ids, 0);
+  },
+
+  // Gives the notes in the folder (trash excluded) its colour, once.
+  applyColorToFolder: async (folderId, colorIndex) => {
+    const notes = await db.notes.where('folderId').equals(folderId).toArray();
+    await get().setColorForNotes(notes.filter(n => n.state !== 'trash').map(n => n.id), colorIndex);
+  },
+
   // ─── Import from parsed notes.json ────────────────────────────────────────
   importFromJson: async (jsonData) => {
     const notes = jsonData.notes || [];

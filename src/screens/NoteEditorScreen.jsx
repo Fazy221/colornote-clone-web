@@ -18,9 +18,12 @@ import LockIcon        from '@mui/icons-material/Lock';
 import LockOpenIcon    from '@mui/icons-material/LockOpen';
 
 import ColorPicker          from '../components/common/ColorPicker';
+import FolderPicker         from '../components/common/FolderPicker';
+import FolderOutlinedIcon   from '@mui/icons-material/FolderOutlined';
 import MasterPasswordDialog from '../components/common/MasterPasswordDialog';
 import { getColor }         from '../utils/colors';
 import { formatFullDate }   from '../utils/dateUtils';
+import { parseFormat, formatOf, followEdit, toggleStyle, runsOf } from '../utils/textFormat';
 import { decryptNoteContent, encryptNoteContent, getNoteCiphertext } from '../utils/crypto';
 import useNoteStore from '../store/noteStore';
 import useUIStore   from '../store/uiStore';
@@ -43,6 +46,9 @@ function parseChecklistStr(str) {
     return { text: line, checked: false };
   });
 }
+
+// Only a plain text note carries styling. A locked note's save leaves the field as it is.
+const formatPayloadFor = (type, encrypted) => (fmt) => (type === 'text' && encrypted !== 1 ? { format: fmt } : {});
 
 export default function NoteEditorScreen() {
   const navigate      = useNavigate();
@@ -67,7 +73,11 @@ export default function NoteEditorScreen() {
   const [modifiedAt, setModifiedAt] = useState(Date.now());
   const [encrypted, setEncrypted] = useState(0);
   const [importance, setImportance] = useState(0);
+  const [folderId, setFolderId] = useState(0);
   const [calendarDate, setCalendarDate] = useState(initialDate);
+  // Bold, strikethrough and highlight ranges of a text note (see utils/textFormat.js); shared with the Android app.
+  const [format, setFormat]     = useState('');
+  const bodyRef = useRef(null);
 
   // ── Decrypt state ─────────────────────────────────────────────────────────
   const [locked, setLocked]               = useState(false);
@@ -77,6 +87,7 @@ export default function NoteEditorScreen() {
   // ── UI ───────────────────────────────────────────────────────────────────
   const [menuAnchor, setMenuAnchor]       = useState(null);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const saveTimer    = useRef(null);
@@ -86,6 +97,8 @@ export default function NoteEditorScreen() {
   const rawNoteRef   = useRef(null);
 
   const color = getColor(colorIndex);
+  const formatPayload = formatPayloadFor(type, encrypted);
+  const spans = type === 'text' && encrypted !== 1 ? parseFormat(format, body.length) : [];
 
   // ── Decrypt note content ──────────────────────────────────────────────────
   // Content always decrypts with ColorNote's fixed built-in key (see crypto.js)
@@ -129,7 +142,9 @@ export default function NoteEditorScreen() {
         setColorIndex(note.colorIndex || 0);
         setEncrypted(note.encrypted || 0);
         setImportance(note.importance || 0);
+        setFolderId(note.folderId || 0);
         setCalendarDate(note.calendarDate || null);
+        setFormat(note.format || '');
         setModifiedAt(note.modifiedAt || Date.now());
 
         if (note.encrypted === 1) {
@@ -204,11 +219,13 @@ export default function NoteEditorScreen() {
         title:       overrides.title      ?? title,
         type,
         colorIndex:  overrides.colorIndex ?? colorIndex,
+        folderId:    overrides.folderId ?? folderId,
         encrypted,
         importance,
         calendarDate,
         modifiedAt:  Date.now(),
         ...contentPayload,
+        ...formatPayload(overrides.format ?? format),
       };
 
       if (currentIdRef.current) {
@@ -220,12 +237,23 @@ export default function NoteEditorScreen() {
       }
       if (isMounted.current) setModifiedAt(Date.now());
     }, AUTOSAVE_DELAY);
-  }, [title, body, items, type, colorIndex, encrypted, importance, calendarDate, masterPassword, locked]);
+  }, [title, body, items, type, colorIndex, folderId, encrypted, importance, calendarDate, format, masterPassword, locked]);
 
   // ── Field change handlers ─────────────────────────────────────────────────
   const handleTitleChange  = v  => { setTitle(v);  scheduleSave({ title: v }); };
-  const handleBodyChange   = v  => { setBody(v);   scheduleSave({ note: v }); };
+  const handleBodyChange   = v  => {
+    // The ranges follow the text, so styling never slides onto other words.
+    const next = formatOf(followEdit(parseFormat(format, body.length), body, v));
+    setBody(v); setFormat(next); scheduleSave({ note: v, format: next });
+  };
+  const handleStyle = style => {
+    const el = bodyRef.current;
+    if (!el || el.selectionStart === el.selectionEnd) return;
+    const next = formatOf(toggleStyle(parseFormat(format, body.length), el.selectionStart, el.selectionEnd, style));
+    setFormat(next); scheduleSave({ format: next });
+  };
   const handleColorChange  = ci => { setColorIndex(ci); scheduleSave({ colorIndex: ci }); };
+  const handleFolderChange = fid => { setFolderId(fid); scheduleSave({ folderId: fid }); };
 
   // Checklist
   const handleItemText  = (idx, text) => {
@@ -267,7 +295,7 @@ export default function NoteEditorScreen() {
       contentPayload = type === 'checklist' ? { note: null, items } : { note: body, items: null };
     }
 
-    const payload = { title, type, colorIndex, encrypted, importance, calendarDate, modifiedAt: Date.now(), ...contentPayload };
+    const payload = { title, type, colorIndex, folderId, encrypted, importance, calendarDate, modifiedAt: Date.now(), ...contentPayload, ...formatPayload(format) };
 
     if (currentIdRef.current) {
       await updateNote(currentIdRef.current, payload);
@@ -405,23 +433,58 @@ export default function NoteEditorScreen() {
       {/* Content */}
       <Box sx={{ flex: 1, overflowY: 'auto' }}>
         {type === 'text' ? (
-          <TextField
-            value={body}
-            onChange={e => handleBodyChange(e.target.value)}
-            multiline fullWidth variant="standard"
-            autoFocus={isNew}
-            sx={{
-              px: 2,
-              '& .MuiInput-root:before, & .MuiInput-root:after': { display: 'none' },
-              '& textarea': {
-                fontSize: '0.95rem', lineHeight: '2rem',
-                background: `repeating-linear-gradient(transparent, transparent calc(2rem - 1px), rgba(0,0,0,0.06) calc(2rem - 1px), rgba(0,0,0,0.06) 2rem)`,
-                minHeight: 'calc(100vh - 160px)',
-                color: color.text, caretColor: '#00BCD4',
-              },
-            }}
-            InputProps={{ disableUnderline: true }}
-          />
+          <>
+            {encrypted !== 1 && (
+              <Box sx={{ px: 2, pt: 0.5, display: 'flex', gap: 0.5 }}>
+                {[['b', 'B', { fontWeight: 700 }], ['s', 'S', { textDecoration: 'line-through' }],
+                  ['h', 'H', { background: 'rgba(255,235,59,0.8)' }]].map(([style, label, look]) => (
+                  <Button
+                    key={style} size="small" aria-label={{ b: 'Bold', s: 'Strikethrough', h: 'Highlight' }[style]}
+                    onMouseDown={e => e.preventDefault()} onClick={() => handleStyle(style)}
+                    sx={{ minWidth: 32, color: color.text, ...look }}
+                  >{label}</Button>
+                ))}
+              </Box>
+            )}
+            <Box sx={{ position: 'relative' }}>
+              {spans.length > 0 && (
+                // The text is drawn here, in its styles, and the textarea above it is see-through, so the
+                // caret and selection stay native. Same font and wrapping, so the two line up.
+                <Box aria-hidden sx={{
+                  position: 'absolute', inset: 0, px: 2, pt: '4px', pb: '5px', pointerEvents: 'none',
+                  typography: 'body1', fontSize: '0.95rem', lineHeight: '2rem', color: color.text,
+                  whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
+                }}>
+                  {runsOf(body, spans).map((run, i) => (
+                    <span key={i} style={{
+                      fontWeight: run.styles.includes('b') ? 700 : undefined,
+                      textDecoration: run.styles.includes('s') ? 'line-through' : undefined,
+                      background: run.styles.includes('h') ? 'rgba(255,235,59,0.8)' : undefined,
+                    }}>{run.text}</span>
+                  ))}
+                  {'​'}
+                </Box>
+              )}
+              <TextField
+                value={body}
+                onChange={e => handleBodyChange(e.target.value)}
+                inputRef={bodyRef}
+                multiline fullWidth variant="standard"
+                autoFocus={isNew}
+                sx={{
+                  px: 2,
+                  '& .MuiInput-root:before, & .MuiInput-root:after': { display: 'none' },
+                  '& textarea': {
+                    fontSize: '0.95rem', lineHeight: '2rem',
+                    background: `repeating-linear-gradient(transparent, transparent calc(2rem - 1px), rgba(0,0,0,0.06) calc(2rem - 1px), rgba(0,0,0,0.06) 2rem)`,
+                    minHeight: 'calc(100vh - 160px)',
+                    color: spans.length > 0 ? 'transparent' : color.text, caretColor: '#00BCD4',
+                  },
+                }}
+                InputProps={{ disableUnderline: true }}
+              />
+            </Box>
+          </>
         ) : (
           <Box sx={{ px: 1, pb: 4 }}>
             {items.map((item, idx) => (
@@ -456,11 +519,15 @@ export default function NoteEditorScreen() {
 
       {/* Color picker */}
       <ColorPicker open={colorPickerOpen} currentColor={colorIndex} onSelect={handleColorChange} onClose={() => setColorPickerOpen(false)} />
+      <FolderPicker open={folderPickerOpen} current={folderId} onSelect={handleFolderChange} onClose={() => setFolderPickerOpen(false)} />
 
       {/* Three-dot menu */}
       <Menu anchorEl={menuAnchor} open={Boolean(menuAnchor)} onClose={() => setMenuAnchor(null)}>
         <MenuItem onClick={() => { setMenuAnchor(null); setColorPickerOpen(true); }}>
           <ColorLensIcon sx={{ mr: 1.5, fontSize: 20 }} /> Color
+        </MenuItem>
+        <MenuItem onClick={() => { setMenuAnchor(null); setFolderPickerOpen(true); }}>
+          <FolderOutlinedIcon sx={{ mr: 1.5, fontSize: 20 }} /> Folder
         </MenuItem>
         <MenuItem onClick={() => { setMenuAnchor(null); handleShare(); }}>
           <ShareIcon sx={{ mr: 1.5, fontSize: 20 }} /> Share

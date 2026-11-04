@@ -4,6 +4,7 @@ import BottomNavigation from '@mui/material/BottomNavigation';
 import BottomNavigationAction from '@mui/material/BottomNavigationAction';
 import Paper from '@mui/material/Paper';
 import NotesIcon from '@mui/icons-material/Notes';
+import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import SearchIcon from '@mui/icons-material/Search';
 import MenuIcon from '@mui/icons-material/Menu';
@@ -14,21 +15,23 @@ import MenuIcon from '@mui/icons-material/Menu';
 // just wasted space with no function.
 const NAV_ITEMS = [
   { label: '',          icon: <NotesIcon />,             path: '/' },
+  { label: '',          icon: <FolderOutlinedIcon />,     path: '/folders' },
   { label: '',          icon: <CalendarMonthIcon />,      path: '/calendar' },
   { label: '',          icon: <SearchIcon />,             path: '/search' },
   { label: '',          icon: <MenuIcon />,               path: '/more' },
 ];
 
 const PATH_TO_INDEX = {
-  '/': 0, '/calendar': 1, '/search': 2, '/more': 3,
-  '/archive': 3, '/trash': 3, '/settings': 3, '/import': 3,
+  '/': 0, '/folders': 1, '/calendar': 2, '/search': 3, '/more': 4,
+  '/archive': 4, '/trash': 4, '/settings': 4, '/import': 4,
 };
 
 export default function BottomNav() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const currentIndex = PATH_TO_INDEX[location.pathname] ?? 0;
+  const currentIndex = PATH_TO_INDEX[location.pathname]
+    ?? (location.pathname.startsWith('/folders/') ? 1 : 0);
 
   return (
     <Paper
@@ -60,7 +63,7 @@ export default function BottomNav() {
               color: i === currentIndex ? '#00BCD4' : 'text.secondary',
               minWidth: 0,
               '& .MuiSvgIcon-root': {
-                fontSize: i === 1 ? '1.4rem' : '1.5rem', // calendar icon slightly smaller
+                fontSize: i === 2 ? '1.4rem' : '1.5rem', // calendar icon slightly smaller
               },
             }}
           />

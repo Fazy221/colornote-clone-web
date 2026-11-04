@@ -32,7 +32,7 @@ let currentUid = null;
 // Fields compared when the two copies have the same `modifiedAt`.
 const SYNCED_FIELDS = [
   'title', 'note', 'items', 'type', 'colorIndex', 'state', 'encrypted', 'folderId',
-  'importance', 'calendarDate', 'reminderType', 'reminderRepeat', 'tags',
+  'importance', 'calendarDate', 'reminderType', 'reminderRepeat', 'tags', 'format',
 ];
 
 function normalise(v) {
@@ -236,6 +236,19 @@ export async function pushSetting(key, value) {
     await setDoc(doc(firestoreDb, 'users', currentUid, 'meta', 'appSettings'), { [key]: value }, { merge: true });
   } catch (e) {
     console.error('pushSetting failed (will retry when online):', e.code || e);
+  }
+}
+
+// Re-reads one setting from the cloud into the local table. The Folders screen
+// calls it before it shows or rewrites the list, so a change made on the phone
+// since this page loaded is not overwritten with an older list.
+export async function pullSetting(key) {
+  if (!currentUid) return;
+  try {
+    const snap = await getDoc(doc(firestoreDb, 'users', currentUid, 'meta', 'appSettings'));
+    if (snap.exists() && key in snap.data()) await setSetting(key, snap.data()[key]);
+  } catch (e) {
+    console.error('pullSetting failed (using the local copy):', e.code || e);
   }
 }
 

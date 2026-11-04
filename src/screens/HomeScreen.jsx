@@ -25,6 +25,8 @@ import GridViewIcon from '@mui/icons-material/GridView';
 import ErrorBoundary from '../components/common/ErrorBoundary';
 import NoteCard from '../components/notes/NoteCard';
 import ColorPicker from '../components/common/ColorPicker';
+import FolderPicker from '../components/common/FolderPicker';
+import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ColorFilterDialog from '../components/common/ColorFilterDialog';
 import BottomNav from '../components/layout/BottomNav';
 import { NOTE_COLORS } from '../utils/colors';
@@ -41,7 +43,7 @@ export default function HomeScreen() {
   const navigate = useNavigate();
   const {
     notes, loading, loadNotes, activeState,
-    archiveNotes, trashNotes, setColorForNotes, setPinForNotes,
+    archiveNotes, trashNotes, setColorForNotes, setPinForNotes, setFolderForNotes,
   } = useNoteStore();
   const {
     colorFilter, setColorFilter, sortOrder, setSortOrder,
@@ -56,6 +58,7 @@ export default function HomeScreen() {
   const [sortAnchor, setSortAnchor] = useState(null);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [colorFilterDialogOpen, setColorFilterDialogOpen] = useState(false);
   const [viewMenuAnchor, setViewMenuAnchor] = useState(null);
 
@@ -182,6 +185,11 @@ export default function HomeScreen() {
 
   const handleBulkColor = (colorIndex) => {
     setColorForNotes([...selectedIds], colorIndex);
+    clearSelection();
+  };
+
+  const handleBulkFolder = (folderId) => {
+    setFolderForNotes([...selectedIds], folderId);
     clearSelection();
   };
 
@@ -410,6 +418,13 @@ export default function HomeScreen() {
             <Typography variant="caption" sx={{ fontSize: '0.65rem' }}>Color</Typography>
           </IconButton>
           <IconButton
+            onClick={() => setFolderPickerOpen(true)}
+            sx={{ flex: 1, borderRadius: 0, py: 1, flexDirection: 'column', gap: 0.25 }}
+          >
+            <FolderOutlinedIcon sx={{ fontSize: 22 }} />
+            <Typography variant="caption" sx={{ fontSize: '0.65rem' }}>Folder</Typography>
+          </IconButton>
+          <IconButton
             onClick={handleBulkPin}
             sx={{ flex: 1, borderRadius: 0, py: 1, flexDirection: 'column', gap: 0.25 }}
           >
@@ -439,6 +454,14 @@ export default function HomeScreen() {
         currentColor={selectedNotes.length === 1 ? selectedNotes[0].colorIndex : undefined}
         onSelect={handleBulkColor}
         onClose={() => setColorPickerOpen(false)}
+      />
+
+      {/* ── Bulk folder picker ── */}
+      <FolderPicker
+        open={folderPickerOpen}
+        current={selectedNotes.length === 1 ? selectedNotes[0].folderId : undefined}
+        onSelect={handleBulkFolder}
+        onClose={() => setFolderPickerOpen(false)}
       />
 
       {/* ── Color filter modal (filter / rename / counts) ── */}

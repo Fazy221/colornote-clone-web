@@ -31,6 +31,24 @@ export async function getNotesByState(state = 'normal') {
     .sortBy('modifiedAt');
 }
 
+// Helper: notes that belong to a folder (anything but the trash), pinned first then newest.
+export async function getNotesInFolder(folderId) {
+  const notes = await db.notes.where('folderId').equals(folderId).toArray();
+  return notes
+    .filter(n => n.state !== 'trash')
+    .sort((a, b) => ((b.importance === 1) - (a.importance === 1)) || ((b.modifiedAt || 0) - (a.modifiedAt || 0)));
+}
+
+// Helper: how many notes each folder holds (trash and the real app's system folder excluded).
+export async function getFolderCounts() {
+  const counts = {};
+  await db.notes.where('folderId').above(0).each(n => {
+    if (n.state === 'trash' || n.folderId === 256) return;
+    counts[n.folderId] = (counts[n.folderId] || 0) + 1;
+  });
+  return counts;
+}
+
 // Helper: get notes for a specific calendar date (excludes trashed/archived)
 export async function getNotesByDate(dateStr) {
   const notes = await db.notes

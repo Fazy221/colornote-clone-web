@@ -11,6 +11,8 @@ import HomeScreen from './screens/HomeScreen';
 import NoteEditorScreen from './screens/NoteEditorScreen';
 import CalendarScreen from './screens/CalendarScreen';
 import SearchScreen from './screens/SearchScreen';
+import FoldersScreen from './screens/FoldersScreen';
+import FolderNotesScreen from './screens/FolderNotesScreen';
 import { MoreScreen } from './screens/MoreScreen';
 import { ArchiveScreen, TrashScreen } from './screens/ArchiveTrashScreen';
 import ImportScreen from './screens/ImportScreen';
@@ -101,6 +103,8 @@ export default function App() {
         <Routes>
           <Route path="/"           element={<HomeScreen />} />
           <Route path="/note/:id"   element={<NoteEditorScreen />} />
+          <Route path="/folders"    element={<FoldersScreen />} />
+          <Route path="/folders/:id" element={<FolderNotesScreen />} />
           <Route path="/calendar"   element={<CalendarScreen />} />
           <Route path="/search"     element={<SearchScreen />} />
           <Route path="/more"       element={<MoreScreen />} />
