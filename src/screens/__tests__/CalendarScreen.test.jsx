@@ -34,6 +34,16 @@ describe('the calendar screen', () => {
     expect(screen.getByText(label(0))).toBeTruthy();
   });
 
+  it('jumps back to this month on T, but not while typing', () => {
+    render(<MemoryRouter><><input data-testid="field" /><CalendarScreen /></></MemoryRouter>);
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    fireEvent.keyDown(screen.getByTestId('field'), { key: 't' });
+    expect(screen.getByText(label(2))).toBeTruthy();
+    fireEvent.keyDown(window, { key: 't' });
+    expect(screen.getByText(label(0))).toBeTruthy();
+  });
+
   it('leaves the arrow keys alone while typing in a field', () => {
     render(<MemoryRouter><><input data-testid="field" /><CalendarScreen /></></MemoryRouter>);
     fireEvent.keyDown(screen.getByTestId('field'), { key: 'ArrowRight' });

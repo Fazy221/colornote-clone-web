@@ -44,6 +44,10 @@ const useUIStore = create((set, get) => ({
   showToast: (message) => set({ toast: { message, key: Date.now() } }),
   clearToast: () => set({ toast: null }),
 
+  // The keyboard-shortcut cheat sheet (see ShortcutsDialog).
+  shortcutsOpen: false,
+  setShortcutsOpen: (open) => set({ shortcutsOpen: Boolean(open) }),
+
   // Master password (in-memory only, never persisted)
   masterPassword: null,
   setMasterPassword: (pw) => set({ masterPassword: pw }),

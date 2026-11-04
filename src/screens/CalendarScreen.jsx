@@ -84,17 +84,19 @@ export default function CalendarScreen() {
     setSelectedDate(null);
   };
 
-  // Left and right arrow keys step the month (not while typing in a field).
+  // Left and right arrow keys step the month, T returns to this month (not while typing in a field).
   const stepRef = useRef(null);
-  stepRef.current = { prevMonth, nextMonth };
+  stepRef.current = { prevMonth, nextMonth, goToday };
   useEffect(() => {
     const onKey = e => {
-      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 't') return;
       if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
       const t = e.target;
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (document.querySelector('.MuiModal-root')) return;
       e.preventDefault();
-      if (e.key === 'ArrowLeft') stepRef.current.prevMonth(); else stepRef.current.nextMonth();
+      if (e.key === 't') stepRef.current.goToday();
+      else if (e.key === 'ArrowLeft') stepRef.current.prevMonth(); else stepRef.current.nextMonth();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

@@ -34,6 +34,7 @@ import { getColor }         from '../utils/colors';
 import { formatFullDate }   from '../utils/dateUtils';
 import { parseFormat, formatOf, followEdit, toggleStyle, runsOf } from '../utils/textFormat';
 import { findOffsets, markRuns } from '../utils/findInNote';
+import { is, hasOpenOverlay, shortcutDone } from '../utils/shortcuts';
 import { decryptNoteContent, encryptNoteContent, getNoteCiphertext } from '../utils/crypto';
 import { CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
 import { ARCHIVE_QUESTION } from '../utils/reminders';
@@ -406,9 +407,10 @@ export default function NoteEditorScreen() {
   const handleItemText  = (idx, text) => setItems(items.map((it, i) => i === idx ? { ...it, text } : it));
   const handleItemCheck = idx => setItems(items.map((it, i) => i === idx ? { ...it, checked: !it.checked } : it));
   // A new row takes the cursor, so a list can be typed without the mouse.
-  const addItem = () => {
-    focusItemRef.current = items.length;
-    setItems([...items, { text: '', checked: false }]);
+  // Enter in a row adds the new one right below it; the Add Item button adds at the end.
+  const addItem = (after = items.length - 1) => {
+    focusItemRef.current = after + 1;
+    setItems([...items.slice(0, after + 1), { text: '', checked: false }, ...items.slice(after + 1)]);
   };
   const removeItem = idx => {
     if (items.length === 1) return;
@@ -453,10 +455,32 @@ export default function NoteEditorScreen() {
   const overlayOpen = Boolean(menuAnchor || colorPickerOpen || folderPickerOpen || deleteDialogOpen || archiveAskOpen || pwDialogOpen || finding);
   const escapeRef = useRef(null);
   escapeRef.current = () => { if (!overlayOpen) handleBack(); };
+  // Ctrl+Enter saves and leaves, Ctrl+D duplicates, Ctrl+Alt+C opens the colour picker. They wait while a
+  // dialog or menu is open, and on a locked note. The ones that act without showing it say so in a toast.
+  const comboRef = useRef(null);
+  comboRef.current = async (e) => {
+    if (e.defaultPrevented || e.isComposing || locked || loading || hasOpenOverlay()) return;
+    if (is(e, 'saveClose')) {
+      e.preventDefault();
+      const wasDirty = dirty;
+      await handleSave();
+      handleBack();
+      if (wasDirty) showToast(shortcutDone('Saved and closed'));
+    } else if (is(e, 'duplicate')) {
+      e.preventDefault();
+      if (!currentIdRef.current) return;
+      await handleDuplicate();
+      showToast(shortcutDone('Note duplicated'));
+    } else if (is(e, 'colour')) {
+      e.preventDefault();
+      setColorPickerOpen(true);
+    }
+  };
   useEffect(() => {
     const onKey = e => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveRef.current?.(); }
       if (e.key === 'Escape' && !e.defaultPrevented && !e.isComposing) escapeRef.current?.();
+      comboRef.current?.(e);
     };
     // Closing the tab with unsaved text asks first.
     const onUnload = e => { if (latestRef.current?.dirty) e.preventDefault(); };
@@ -720,6 +744,10 @@ export default function NoteEditorScreen() {
                   onSelect: e => setSel({ start: e.target.selectionStart, end: e.target.selectionEnd }),
                   // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y use the same history as the buttons.
                   onKeyDown: e => {
+                    if (editable && !e.nativeEvent.isComposing) {
+                      const style = is(e, 'bold') ? 'b' : is(e, 'strike') ? 's' : is(e, 'highlight') ? 'h' : null;
+                      if (style) { e.preventDefault(); handleStyle(style); return; }
+                    }
                     if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
                     const k = e.key.toLowerCase();
                     if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -743,7 +771,7 @@ export default function NoteEditorScreen() {
                   placeholder="Add item" variant="standard" fullWidth
                   autoFocus={isNew && idx === 0}
                   onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addItem(); }
+                    if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) { e.preventDefault(); addItem(idx); }
                     if (e.key === 'Backspace' && item.text === '') removeItem(idx);
                   }}
                   sx={{
@@ -754,7 +782,7 @@ export default function NoteEditorScreen() {
                 />
               </Box>
             ))}
-            <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.5, opacity: 0.6, cursor: 'pointer', p: 1 }} onClick={addItem}>
+            <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.5, opacity: 0.6, cursor: 'pointer', p: 1 }} onClick={() => addItem()}>
               <AddCircleOutlineIcon sx={{ fontSize: 20, mr: 1, color: color.text }} />
               <Typography sx={{ fontSize: '0.95rem', color: color.text }}>Add Item</Typography>
             </Box>

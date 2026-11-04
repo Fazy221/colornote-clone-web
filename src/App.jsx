@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useParams, useLocation } from 'react-router-dom';
 import { ThemeProvider, CssBaseline, Box, CircularProgress, Snackbar } from '@mui/material';
 import { buildTheme } from './theme';
 import useUIStore from './store/uiStore';
@@ -19,6 +19,16 @@ import ImportScreen from './screens/ImportScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import ConflictsScreen from './screens/ConflictsScreen';
 import PageFrame from './components/layout/PageFrame';
+import GlobalShortcuts from './components/common/GlobalShortcuts';
+
+// A keyboard shortcut can open a new note from inside a note, which is the same route with another
+// id. The key gives each its own editor, so nothing of the first carries into the second (and the
+// first saves what it had on its way out).
+function NoteEditorRoute() {
+  const { id } = useParams();
+  const { search } = useLocation();
+  return <NoteEditorScreen key={`${id}${search}`} />;
+}
 
 export default function App() {
   const darkMode = useUIStore(s => s.darkMode);
@@ -107,10 +117,11 @@ export default function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <BrowserRouter>
+        <GlobalShortcuts />
         <PageFrame>
         <Routes>
           <Route path="/"           element={<HomeScreen />} />
-          <Route path="/note/:id"   element={<NoteEditorScreen />} />
+          <Route path="/note/:id"   element={<NoteEditorRoute />} />
           <Route path="/folders"    element={<FoldersScreen />} />
           <Route path="/folders/:id" element={<FolderNotesScreen />} />
           <Route path="/calendar"   element={<CalendarScreen />} />

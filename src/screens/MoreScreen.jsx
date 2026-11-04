@@ -12,6 +12,8 @@ import PaletteIcon from '@mui/icons-material/Palette';
 import InfoIcon from '@mui/icons-material/Info';
 import SettingsIcon from '@mui/icons-material/Settings';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
+import KeyboardIcon from '@mui/icons-material/Keyboard';
+import useUIStore from '../store/uiStore';
 import BottomNav from '../components/layout/BottomNav';
 
 export function MoreScreen() {
@@ -22,6 +24,7 @@ export function MoreScreen() {
     { label: 'Trash Can',    icon: <DeleteIcon />,      path: '/trash' },
     { label: 'Import backup',icon: <UploadFileIcon />,  path: '/import' },
     { label: 'Settings',     icon: <SettingsIcon />,    path: '/settings' },
+    { label: 'Keyboard shortcuts', icon: <KeyboardIcon />, action: () => useUIStore.getState().setShortcutsOpen(true) },
   ];
 
   return (
@@ -38,8 +41,8 @@ export function MoreScreen() {
 
         <List disablePadding sx={{ bgcolor: 'background.paper' }}>
           {items.map((item, i) => (
-            <React.Fragment key={item.path}>
-              <ListItem button onClick={() => navigate(item.path)} sx={{ py: 1.5 }}>
+            <React.Fragment key={item.label}>
+              <ListItem button onClick={() => (item.action ? item.action() : navigate(item.path))} sx={{ py: 1.5 }}>
                 <ListItemIcon sx={{ minWidth: 44 }}>{item.icon}</ListItemIcon>
                 <ListItemText primary={item.label} />
               </ListItem>

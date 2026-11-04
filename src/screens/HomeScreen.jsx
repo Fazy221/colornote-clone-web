@@ -27,6 +27,7 @@ import ColorPicker from '../components/common/ColorPicker';
 import FolderPicker from '../components/common/FolderPicker';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ColorFilterDialog from '../components/common/ColorFilterDialog';
+import { is, isTyping, hasOpenOverlay, useKeydown } from '../utils/shortcuts';
 import BottomNav from '../components/layout/BottomNav';
 import SyncStatus from '../components/layout/SyncStatus';
 import ConflictsButton from '../components/layout/ConflictsButton';
@@ -223,6 +224,19 @@ export default function HomeScreen() {
     trashNotes([...selectedIds]);
     clearSelection();
   };
+
+  // Keyboard: Ctrl+A selects every note in view, Esc clears the selection, Delete trashes it, 1-4 pick
+  // the grid. Left alone while typing or with a dialog open. The grid keys only act where the grid shows.
+  useKeydown(e => {
+    if (e.defaultPrevented || e.isComposing || isTyping(e.target) || hasOpenOverlay()) return;
+    if (is(e, 'selectAll')) { e.preventDefault(); if (displayNotes.length) selectAll(displayNotes.map(n => n.id)); }
+    else if (is(e, 'clearSel') && selectionMode) clearSelection();
+    else if (is(e, 'deleteSel') && selectionMode) { e.preventDefault(); handleBulkDelete(); }
+    else if (isDesktop && !selectionMode) {
+      const n = [1, 2, 3, 4].find(k => is(e, `grid${k}`));
+      if (n) setHomeGridColumns(n);
+    }
+  });
 
   const SORT_LABELS = {
     modified: 'Sort by modified time',
