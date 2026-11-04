@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, Typography, IconButton,
   Fab, Menu, MenuItem, Divider, Dialog, DialogTitle,
-  DialogContent, List, ListItem, ListItemIcon, ListItemText,
+  DialogContent, DialogContentText, DialogActions, Button, List, ListItem, ListItemIcon, ListItemText,
   CircularProgress, Chip, useMediaQuery,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
@@ -30,6 +30,7 @@ import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ColorFilterDialog from '../components/common/ColorFilterDialog';
 import BottomNav from '../components/layout/BottomNav';
 import { NOTE_COLORS } from '../utils/colors';
+import { ARCHIVE_QUESTION } from '../utils/reminders';
 import useNoteStore from '../store/noteStore';
 import useUIStore from '../store/uiStore';
 
@@ -43,8 +44,10 @@ export default function HomeScreen() {
   const navigate = useNavigate();
   const {
     notes, loading, loadNotes, activeState,
-    archiveNotes, trashNotes, setColorForNotes, setPinForNotes, setFolderForNotes,
+    archiveNotes, trashNotes, setColorForNotes, setPinForNotes, setFolderForNotes, liveReminderIds,
   } = useNoteStore();
+  // { ids, live } while asking whether to end the reminders of the notes being archived.
+  const [archiveAsk, setArchiveAsk] = useState(null);
   const {
     colorFilter, setColorFilter, sortOrder, setSortOrder,
     selectedIds, selectionMode, toggleSelect, clearSelection, selectAll,
@@ -198,8 +201,20 @@ export default function HomeScreen() {
     clearSelection();
   };
 
-  const handleBulkArchive = () => {
-    archiveNotes([...selectedIds]);
+  // As on the phone: if a note has a reminder that would still ring or show,
+  // ask first, and end those reminders with the archive.
+  const handleBulkArchive = async () => {
+    const ids = [...selectedIds];
+    const live = await liveReminderIds(ids);
+    if (live.length) { setArchiveAsk({ ids, live }); return; }
+    archiveNotes(ids);
+    clearSelection();
+  };
+
+  const confirmArchive = () => {
+    const { ids, live } = archiveAsk;
+    setArchiveAsk(null);
+    archiveNotes(ids, live);
     clearSelection();
   };
 
@@ -472,6 +487,18 @@ export default function HomeScreen() {
         onClose={() => setColorFilterDialogOpen(false)}
         counts={colorCounts}
       />
+
+      {/* ── Archive confirm ── */}
+      <Dialog open={Boolean(archiveAsk)} onClose={() => setArchiveAsk(null)}>
+        <DialogTitle>Archive</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{ARCHIVE_QUESTION}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setArchiveAsk(null)}>Cancel</Button>
+          <Button onClick={confirmArchive}>OK</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* ── Add Note Dialog ── */}
       <Dialog open={addDialogOpen} onClose={() => setAddDialogOpen(false)}>

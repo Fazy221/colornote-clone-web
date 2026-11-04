@@ -9,6 +9,18 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import useNoteStore from '../store/noteStore';
 
+// What the import did to notes already here (see importPlan.js), shown when not zero.
+const RESULT_CHIPS = [
+  ['replaced', 'took the newer text from the file', 'info'],
+  ['keptOurs', 'kept the newer text here', 'default'],
+  ['conflictCopies', '[conflict] copies of the other text', 'warning'],
+  ['detailsTaken', 'took newer details from the file', 'info'],
+  ['detailsKept', 'kept newer details here', 'default'],
+  ['stateFixed', 'archived or trashed as in the file', 'default'],
+  ['stateKept', 'stayed archived or trashed here', 'default'],
+  ['unchanged', 'already the same', 'default'],
+];
+
 export default function ImportScreen() {
   const navigate = useNavigate();
   const { importFromJson } = useNoteStore();
@@ -103,13 +115,10 @@ export default function ImportScreen() {
               <CheckCircleIcon sx={{ fontSize: 64, color: '#4CAF50' }} />
               <Typography variant="h6" sx={{ color: '#4CAF50', fontWeight: 500 }}>Import complete!</Typography>
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', justifyContent: 'center' }}>
-                <Chip label={`${result?.imported} imported`} color="success" size="small" />
-                {result?.patched > 0 && (
-                  <Chip label={`${result?.patched} updated (calendar date)`} color="info" size="small" />
-                )}
-                {result?.skipped > 0 && (
-                  <Chip label={`${result?.skipped} skipped (already exist)`} size="small" />
-                )}
+                <Chip label={`${result?.added ?? 0} added`} color="success" size="small" />
+                {RESULT_CHIPS.filter(([key]) => result?.[key] > 0).map(([key, label, color]) => (
+                  <Chip key={key} label={`${result[key]} ${label}`} color={color} size="small" />
+                ))}
               </Box>
             </>
           ) : status === 'loading' ? (

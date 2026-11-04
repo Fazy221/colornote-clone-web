@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, IconButton, TextField,
   Typography, Checkbox, Menu, MenuItem, Divider,
-  Dialog, DialogTitle, DialogActions, Button,
+  Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Button, Snackbar,
   CircularProgress,
 } from '@mui/material';
 import CheckIcon       from '@mui/icons-material/Check';
@@ -13,6 +13,7 @@ import ShareIcon       from '@mui/icons-material/Share';
 import DeleteIcon      from '@mui/icons-material/Delete';
 import ColorLensIcon   from '@mui/icons-material/ColorLens';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
 import PushPinIcon     from '@mui/icons-material/PushPin';
 import LockIcon        from '@mui/icons-material/Lock';
 import LockOpenIcon    from '@mui/icons-material/LockOpen';
@@ -26,6 +27,7 @@ import { formatFullDate }   from '../utils/dateUtils';
 import { parseFormat, formatOf, followEdit, toggleStyle, runsOf } from '../utils/textFormat';
 import { decryptNoteContent, encryptNoteContent, getNoteCiphertext } from '../utils/crypto';
 import { CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
+import { ARCHIVE_QUESTION } from '../utils/reminders';
 import useNoteStore from '../store/noteStore';
 import useUIStore   from '../store/uiStore';
 
@@ -61,7 +63,9 @@ export default function NoteEditorScreen() {
   const initialType   = searchParams.get('type') || 'text';
   const initialDate   = searchParams.get('date')  || null;
 
-  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin } = useNoteStore();
+  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin, liveReminderIds } = useNoteStore();
+  const [archiveAskOpen, setArchiveAskOpen] = useState(false);
+  const [toast, setToast] = useState(null);
   const masterPassword    = useUIStore(s => s.masterPassword);
   const setMasterPassword = useUIStore(s => s.setMasterPassword);
 
@@ -341,14 +345,63 @@ export default function NoteEditorScreen() {
     navigate(-1);
   };
 
-  const handleShare = () => {
+  // What Share and Copy note hand over: the title, a blank line, then the text.
+  const shareText = () => {
     const text = type === 'checklist'
       ? items.map(i => `${i.checked ? '[V]' : '[ ]'} ${i.text}`).join('\n')
       : body;
-    const full = title ? `${title}\n\n${text}` : text;
-    if (navigator.share) navigator.share({ text: full });
-    else navigator.clipboard?.writeText(full);
+    return title ? `${title}\n\n${text}` : text;
+  };
+
+  const handleShare = () => {
+    const full = shareText();
+    if (navigator.share) navigator.share({ text: full }).catch(() => {});
+    else navigator.clipboard?.writeText(full).catch(() => {});
     setMenuAnchor(null);
+  };
+
+  // As on the phone: the same text as Share, straight to the clipboard.
+  const handleCopy = async () => {
+    setMenuAnchor(null);
+    try {
+      if (locked) throw new Error('locked');
+      await navigator.clipboard.writeText(shareText());
+      setToast('Copied to clipboard');
+    } catch {
+      setToast("Can't copy this note");
+    }
+  };
+
+  // Saves what is waiting for the autosave timer, so Duplicate and Archive
+  // act on what was typed.
+  const flushSave = async () => {
+    clearTimeout(saveTimer.current);
+    const v = pendingRef.current;
+    pendingRef.current = null;
+    if (v) await queueSave(v);
+    else await saveChain.current;
+  };
+
+  const handleDuplicate = async () => {
+    setMenuAnchor(null);
+    await flushSave();
+    await duplicateNote(currentIdRef.current);
+    navigate(-1);
+  };
+
+  // A live reminder is asked about first, and ends with the archive.
+  const handleArchive = async () => {
+    setMenuAnchor(null);
+    await flushSave();
+    if ((await liveReminderIds([currentIdRef.current])).length) { setArchiveAskOpen(true); return; }
+    await archiveNote(currentIdRef.current);
+    navigate(-1);
+  };
+
+  const confirmArchive = async () => {
+    setArchiveAskOpen(false);
+    await archiveNote(currentIdRef.current, true);
+    navigate(-1);
   };
 
   // ── Password dialog success ───────────────────────────────────────────────
@@ -565,9 +618,12 @@ export default function NoteEditorScreen() {
         <MenuItem onClick={() => { setMenuAnchor(null); handleShare(); }}>
           <ShareIcon sx={{ mr: 1.5, fontSize: 20 }} /> Share
         </MenuItem>
+        <MenuItem onClick={handleCopy}>
+          <ContentCopyIcon sx={{ mr: 1.5, fontSize: 20 }} /> Copy note
+        </MenuItem>
         {currentIdRef.current && (
-          <MenuItem onClick={() => { setMenuAnchor(null); duplicateNote(currentIdRef.current); navigate(-1); }}>
-            <ContentCopyIcon sx={{ mr: 1.5, fontSize: 20 }} /> Duplicate
+          <MenuItem onClick={handleDuplicate}>
+            <FileCopyOutlinedIcon sx={{ mr: 1.5, fontSize: 20 }} /> Duplicate
           </MenuItem>
         )}
         {currentIdRef.current && (
@@ -576,7 +632,7 @@ export default function NoteEditorScreen() {
           </MenuItem>
         )}
         {currentIdRef.current && (
-          <MenuItem onClick={() => { setMenuAnchor(null); archiveNote(currentIdRef.current); navigate(-1); }}>
+          <MenuItem onClick={handleArchive}>
             Archive
           </MenuItem>
         )}
@@ -599,6 +655,20 @@ export default function NoteEditorScreen() {
           <Button onClick={handleDelete} color="error">Delete</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Archive confirm, only for a note whose reminder would still ring or show */}
+      <Dialog open={archiveAskOpen} onClose={() => setArchiveAskOpen(false)}>
+        <DialogTitle>Archive</DialogTitle>
+        <DialogContent>
+          <DialogContentText>{ARCHIVE_QUESTION}</DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setArchiveAskOpen(false)}>Cancel</Button>
+          <Button onClick={confirmArchive}>OK</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Snackbar open={Boolean(toast)} message={toast || ''} autoHideDuration={2000} onClose={() => setToast(null)} />
 
       {/* Password dialog — can also appear mid-session if session was locked */}
       <MasterPasswordDialog

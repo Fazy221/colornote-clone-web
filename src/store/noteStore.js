@@ -1,8 +1,11 @@
 import { create } from 'zustand';
 import { db, getNotesByState, searchNotes, getSetting } from '../db/database';
-import { formatCalendarDate } from '../utils/dateUtils';
 import { pushNote, pushNoteDeletion, syncSetting } from '../sync/notesSync';
 import { BUMP_FIELDS, planEditorSave, sameValue } from '../utils/noteFields';
+import { ENDED_REMINDER, hasLiveReminder } from '../utils/reminders';
+import { noteFromFile, planImport } from '../utils/importPlan';
+
+const ENDED_FIELDS = ['state', ...Object.keys(ENDED_REMINDER)];
 
 const useNoteStore = create((set, get) => ({
   notes: [],
@@ -104,11 +107,10 @@ const useNoteStore = create((set, get) => ({
     pushNote(await db.notes.get(id), ['state']);
   },
 
-  // Archive — same reasoning as trashNote.
-  archiveNote: async (id) => {
-    await db.notes.update(id, { state: 'archived' });
-    await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id), ['state']);
+  // Archive — same reasoning as trashNote. endReminder: the owner agreed to
+  // end a live reminder (see liveReminderIds), as the phone asks before archiving.
+  archiveNote: async (id, endReminder = false) => {
+    await get().archiveNotes([id], endReminder ? [id] : []);
   },
 
   // Restore from trash/archive → normal — same reasoning as trashNote.
@@ -126,11 +128,11 @@ const useNoteStore = create((set, get) => ({
     if (note?.uuid) pushNoteDeletion(note.uuid);
   },
 
-  // Duplicate
+  // Duplicate. The copy is a new note, so it carries no id from the old app.
   duplicateNote: async (id) => {
     const original = await db.notes.get(id);
     if (!original) return;
-    const { id: _id, uuid: _uuid, ...rest } = original;
+    const { id: _id, uuid: _uuid, legacyId: _legacyId, ...rest } = original;
     const now = Date.now();
     const newId = await db.notes.add({ ...rest, uuid: crypto.randomUUID(), createdAt: now, modifiedAt: now });
     await get().loadNotes('normal');
@@ -161,11 +163,28 @@ const useNoteStore = create((set, get) => ({
   //
   // Each helper re-reads the affected rows after modify() and pushes them
   // individually — modify() itself doesn't hand back the updated docs.
-  archiveNotes: async (ids) => {
+  // The notes among ids whose reminder would still ring or show. Archiving
+  // them asks first, as on the phone.
+  liveReminderIds: async (ids) => {
+    if (!ids.length) return [];
+    const now = Date.now();
+    return (await db.notes.where('id').anyOf(ids).toArray()).filter(n => hasLiveReminder(n, now)).map(n => n.id);
+  },
+
+  // endReminderFor: notes whose reminder ends with the archive (the phone's
+  // archiveWithoutReminder), so un-archiving doesn't bring it back. Their
+  // calendar date stays.
+  archiveNotes: async (ids, endReminderFor = []) => {
     if (!ids.length) return;
-    await db.notes.where('id').anyOf(ids).modify({ state: 'archived' });
+    const ending = ids.filter(id => endReminderFor.includes(id));
+    const plain = ids.filter(id => !endReminderFor.includes(id));
+    await db.transaction('rw', db.notes, async () => {
+      if (plain.length) await db.notes.where('id').anyOf(plain).modify({ state: 'archived' });
+      if (ending.length) await db.notes.where('id').anyOf(ending).modify({ state: 'archived', ...ENDED_REMINDER });
+    });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(ids).toArray()).forEach(n => pushNote(n, ['state']));
+    (await db.notes.where('id').anyOf(ids).toArray())
+      .forEach(n => pushNote(n, ending.includes(n.id) ? ENDED_FIELDS : ['state']));
   },
 
   trashNotes: async (ids) => {
@@ -217,6 +236,9 @@ const useNoteStore = create((set, get) => ({
   },
 
   // ─── Import from parsed notes.json ────────────────────────────────────────
+  // The same rules as the phone's import (see importPlan.js): the newer
+  // version wins, text that loses becomes a [conflict] copy, pins and
+  // dismissals stay, and a note hidden on either side stays hidden.
   importFromJson: async (jsonData) => {
     const notes = jsonData.notes || [];
 
@@ -229,77 +251,40 @@ const useNoteStore = create((set, get) => ({
       await syncSetting('masterPasswordVerifier', verifierNote.note);
     }
 
-    // Filter out ColorNote system notes
-    const realNotes = notes.filter(n => n.folderId !== 256);
+    const now = Date.now();
+    const fileNotes = notes.filter(n => n.folderId !== 256 && n.id).map(n => noteFromFile(n, now));
 
-    // Split into new notes (add) vs. already-imported notes. For the latter,
-    // only patch calendarDate — re-importing shouldn't clobber anything the
-    // user has since edited in the app (title, note, color, state, etc.).
-    // This lets a corrected notes.json (e.g. after a parser fix) repair
-    // calendarDate on notes that are already in the DB.
-    const existing = await db.notes.toArray();
-    const existingByUuid = new Map(existing.map(n => [n.uuid, n]));
-
-    const toAdd = [];
-    const toPatch = [];
-
-    for (const n of realNotes) {
-      const match = existingByUuid.get(n.id);
-      const calendarDate = n.calendarDate ? formatCalendarDate(n.calendarDate) : null;
-      if (!match) {
-        toAdd.push(n);
-      } else if (calendarDate !== (match.calendarDate ?? null)) {
-        toPatch.push({ id: match.id, calendarDate });
-      }
-    }
-
-    // Map from our parsed schema to DB schema
-    const mapped = toAdd.map(n => ({
-      uuid: n.id,
-      legacyId: n.legacyId,
-      title: n.title || '',
-      type: n.type || 'text',
-      note: n.note || '',
-      items: n.items || null,
-      colorIndex: n.colorIndex ?? 0,
-      state: n.state || 'normal',
-      encrypted: n.encrypted ? 1 : 0,
-      folderId: n.folderId || 0,
-      importance: n.importance || 0,
-      calendarDate: n.calendarDate ? formatCalendarDate(n.calendarDate) : null,
-      reminderType: n.reminderType || 0,
-      reminderRepeat: n.reminderRepeat || 0,
-      tags: n.tags || '',
-      createdAt: n.createdAt || Date.now(),
-      modifiedAt: n.modifiedAt || Date.now(),
-    }));
-
+    // Planned outside the transaction: the copy ids come from WebCrypto, and
+    // a Dexie 3 transaction ends when it awaits anything else.
+    const plan = await planImport(fileNotes, await db.notes.toArray());
+    const addedIds = [];
+    const updated = [];
     await db.transaction('rw', db.notes, async () => {
-      if (mapped.length) await db.notes.bulkAdd(mapped);
-      // Organizational patch, not a content edit — modifiedAt left untouched
-      // (same reasoning as trash/archive/pin above).
-      for (const { id, calendarDate } of toPatch) {
-        await db.notes.update(id, { calendarDate });
+      for (const n of plan.adds) {
+        if (!(await db.notes.where('uuid').equals(n.uuid).first())) addedIds.push(await db.notes.add(n));
+      }
+      // Only the fields that differ, so the date moves only when the file's
+      // newer text was taken. A note sync changed meanwhile is left alone.
+      for (const u of plan.updates) {
+        const row = await db.notes.get(u.id);
+        if (!row || !sameValue(row, u.base)) continue;
+        await db.notes.update(u.id, u.changes);
+        updated.push(u);
       }
     });
 
-    await get().loadNotes('normal');
+    await get().loadNotes(get().activeState);
 
-    // Mirror the import to the cloud too — both newly-added notes and any
-    // calendarDate patches on notes that were already synced.
-    if (mapped.length) {
-      const addedUuids = mapped.map(n => n.uuid);
-      (await db.notes.where('uuid').anyOf(addedUuids).toArray()).forEach(n => pushNote(n));
+    if (addedIds.length) {
+      (await db.notes.where('id').anyOf(addedIds).toArray()).forEach(n => pushNote(n));
     }
-    if (toPatch.length) {
-      (await db.notes.where('id').anyOf(toPatch.map(p => p.id)).toArray()).forEach(n => pushNote(n, ['calendarDate']));
+    if (updated.length) {
+      const fieldsById = new Map(updated.map(u => [u.id, Object.keys(u.changes)]));
+      (await db.notes.where('id').anyOf([...fieldsById.keys()]).toArray())
+        .forEach(n => pushNote(n, fieldsById.get(n.id)));
     }
 
-    return {
-      imported: mapped.length,
-      patched: toPatch.length,
-      skipped: realNotes.length - mapped.length - toPatch.length,
-    };
+    return plan.report;
   },
 
   // ─── Get single note ───────────────────────────────────────────────────────

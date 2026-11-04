@@ -14,12 +14,22 @@ import BottomNav from '../components/layout/BottomNav';
 import { db } from '../db/database';
 import { getColor } from '../utils/colors';
 import { formatCalendarDate } from '../utils/dateUtils';
+import { notesByDate } from '../utils/reminders';
 
 const DAY_LABELS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
 function getDaysInMonth(year, month) {
   return new Date(year, month + 1, 0).getDate();
+}
+
+// The notes on each day from `from` to `to`, a repeating reminder on every
+// day it comes round, as on the phone.
+async function loadDays(from, to) {
+  const notes = await db.notes
+    .filter(n => Boolean(n.calendarDate) && n.calendarDate <= to && (n.calendarDate >= from || Boolean(n.reminderRepeat)))
+    .toArray();
+  return notesByDate(notes, from, to);
 }
 
 function getFirstDayOfWeek(year, month) {
@@ -39,29 +49,21 @@ export default function CalendarScreen() {
 
   // Load all calendar notes for this month
   useEffect(() => {
+    let live = true;
     const prefix = `${year}-${String(month + 1).padStart(2, '0')}`;
-    db.notes
-      .where('calendarDate').startsWith(prefix)
-      .toArray()
-      .then(notes => {
-        const map = {};
-        notes
-          .filter(n => n.state === 'normal')
-          .forEach(n => {
-            if (!map[n.calendarDate]) map[n.calendarDate] = [];
-            map[n.calendarDate].push(n.colorIndex ?? 0);
-          });
-        setDotMap(map);
-      });
+    loadDays(`${prefix}-01`, `${prefix}-${String(getDaysInMonth(year, month)).padStart(2, '0')}`).then(days => {
+      if (!live) return;
+      setDotMap(Object.fromEntries(Object.entries(days).map(([day, notes]) => [day, notes.map(n => n.colorIndex ?? 0)])));
+    });
+    return () => { live = false; };
   }, [year, month]);
 
   // Load notes for selected date
   useEffect(() => {
     if (!selectedDate) { setNotesOnDate([]); return; }
-    db.notes
-      .where('calendarDate').equals(selectedDate)
-      .toArray()
-      .then(notes => setNotesOnDate(notes.filter(n => n.state === 'normal')));
+    let live = true;
+    loadDays(selectedDate, selectedDate).then(days => { if (live) setNotesOnDate(days[selectedDate] || []); });
+    return () => { live = false; };
   }, [selectedDate]);
 
   const prevMonth = () => {

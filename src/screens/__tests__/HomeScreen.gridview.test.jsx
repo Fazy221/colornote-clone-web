@@ -36,6 +36,8 @@ vi.mock('../../store/noteStore', () => ({
       trashNotes: vi.fn(),
       setColorForNotes: vi.fn(),
       setPinForNotes: vi.fn(),
+      setFolderForNotes: vi.fn(),
+      liveReminderIds: vi.fn(async () => []),
     };
     return selector ? selector(state) : state;
   },
@@ -179,5 +181,6 @@ describe('HomeScreen grid view', () => {
     expect(container.dataset.columns).toBe('3');
 
     spy.mockRestore();
-  });
+    // Five menu round trips over 300 cards: about 1s each on a busy machine, past the 5s default.
+  }, 20000);
 });
