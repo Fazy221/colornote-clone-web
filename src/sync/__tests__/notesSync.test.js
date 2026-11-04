@@ -5,8 +5,10 @@ const h = vi.hoisted(() => ({
   local: [],
   nextId: 1,
   remote: new Map(),
-  fromCache: false,
+  cacheOnly: false,
+  cacheFirst: null,
   listener: null,
+  listens: 0,
   setDocs: [],
   updates: [],
   batchSets: [],
@@ -16,7 +18,6 @@ const h = vi.hoisted(() => ({
   remoteSettings: null,
   online: true,
   failWrites: null,
-  serverReads: 0,
   bases: new Map(),
   gate: null,
   held: 0,
@@ -82,14 +83,6 @@ vi.mock('firebase/firestore', () => ({
     const data = h.remoteSettings;
     return { exists: () => data !== null, data: () => ({ ...data }) };
   },
-  getDocsFromServer: async () => {
-    h.serverReads++;
-    if (!h.online) throw Object.assign(new Error('offline'), { code: 'unavailable' });
-    return {
-      docs: [...h.remote].map(([id, data]) => ({ id, data: () => data })),
-      metadata: { fromCache: h.fromCache },
-    };
-  },
   setDoc: async (ref, data, opts) => {
     maybeFail();
     if (ref.path.includes('meta')) { h.remoteSettings = { ...(opts?.merge ? h.remoteSettings : {}), ...data }; return; }
@@ -110,10 +103,26 @@ vi.mock('firebase/firestore', () => ({
       commit: async () => { for (const [id, d, o] of sets) { h.batchSets.push([id, d]); write(id, d, o); } },
     };
   },
-  onSnapshot: (_ref, cb) => { h.listener = cb; return () => { h.listener = null; }; },
+  // The listener is the start-up read: it answers with the whole collection, from the cache first when a
+  // test sets h.cacheFirst (a Map of what the cache holds), then from the cloud if there is a connection.
+  onSnapshot: (_ref, opts, cb) => {
+    h.listener = cb;
+    h.listens++;
+    h.listenOpts = opts;
+    const snapshotOf = (map, fromCache) => {
+      const docs = [...map].map(([id, data]) => ({ id, data: () => data, metadata: { hasPendingWrites: false } }));
+      return { docs, docChanges: () => docs.map(doc => ({ type: 'added', doc })), metadata: { fromCache } };
+    };
+    setTimeout(() => {
+      if (h.listener !== cb) return;
+      if (h.cacheFirst || h.cacheOnly) cb(snapshotOf(h.cacheFirst || h.remote, true));
+      if (h.online && !h.cacheOnly) cb(snapshotOf(h.remote, false));
+    }, 0);
+    return () => { if (h.listener === cb) h.listener = null; };
+  },
 }));
 
-import { startSync, stopSync, pushNote, pushNoteDeletion, syncSetting, syncSettled } from '../notesSync';
+import { startSync, stopSync, setFirstAnswerTimeoutForTests, pushNote, pushNoteDeletion, syncSetting, syncSettled } from '../notesSync';
 import { recordNote, recordDeletion, confirmNote } from '../outbox';
 import { useSyncStatus } from '../syncStatus';
 
@@ -129,7 +138,7 @@ const localByUuid = (u) => h.local.find(n => n.uuid === u);
 const change = (type, uuid, data, hasPendingWrites = false) => ({
   type, doc: { id: uuid, data: () => data, metadata: { hasPendingWrites } },
 });
-const emit = async (...changes) => h.listener({ docChanges: () => changes });
+const emit = async (...changes) => h.listener({ docChanges: () => changes, metadata: { fromCache: false } });
 const phase = () => useSyncStatus.getState().phase;
 const waitingFor = (uuid) => h.outbox.get(`note:${uuid}`);
 const markSyncedBefore = (...uuids) => localStorage.setItem(`colornote.synced.${UID}`, JSON.stringify(uuids));
@@ -146,12 +155,13 @@ const goOnline = async () => {
 
 beforeEach(() => {
   stopSync();
+  setFirstAnswerTimeoutForTests(5000);
   localStorage.clear();
   Object.assign(h, {
-    local: [], nextId: 1, remote: new Map(), fromCache: false, listener: null,
+    local: [], nextId: 1, remote: new Map(), cacheOnly: false, cacheFirst: null, listener: null, listens: 0,
     setDocs: [], updates: [], batchSets: [], deleted: [],
     outbox: new Map(), settings: new Map(), remoteSettings: null,
-    online: true, failWrites: null, serverReads: 0,
+    online: true, failWrites: null,
     bases: new Map(), gate: null, held: 0,
   });
   Object.defineProperty(window.navigator, 'onLine', { configurable: true, get: () => h.online });
@@ -268,9 +278,41 @@ describe('deleted notes stay deleted', () => {
     stopSync();
 
     h.remote.delete('a');
-    h.fromCache = true;
+    h.cacheOnly = true; // the cloud never answers; the cache says 'a' is gone
+    setFirstAnswerTimeoutForTests(30);
     await startSync(UID);
+    expect(phase()).toBe('waiting');
     expect(localByUuid('a')).toBeDefined();
+  });
+
+  it('ignores the cache answer and reconciles on the cloud answer', async () => {
+    addLocal(note('a'));
+    addLocal(note('b'));
+    markSyncedBefore('a', 'b');
+    seenBefore(note('a')); seenBefore(note('b'));
+    h.remote.set('a', note('a'));
+    // The cache still holds b; the cloud no longer has it, so it was deleted elsewhere.
+    h.cacheFirst = new Map([['a', note('a')], ['b', note('b')]]);
+    await startSync(UID);
+    expect(phase()).toBe('live');
+    expect(localByUuid('a')).toBeDefined();
+    expect(localByUuid('b')).toBeUndefined();
+  });
+
+  it('reads the notes once at start: one listener, no separate pull', async () => {
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+    expect(h.listens).toBe(1);
+    expect(h.listenOpts).toMatchObject({ includeMetadataChanges: true });
+    expect(localByUuid('a')).toBeDefined();
+  });
+
+  it('a metadata-only snapshot after start changes nothing', async () => {
+    h.remote.set('a', note('a'));
+    await startSync(UID);
+    const before = JSON.stringify(h.local);
+    await h.listener({ docChanges: () => [], metadata: { fromCache: false } });
+    expect(JSON.stringify(h.local)).toBe(before);
   });
 
   it('removes a note live when the cloud deletes it, and forgets it', async () => {
@@ -388,7 +430,7 @@ describe('working offline', () => {
     h.online = false;
     await startSync(UID);
     expect(phase()).toBe('waiting');
-    expect(h.serverReads).toBe(0);
+    expect(h.listens).toBe(0);
 
     addLocal(note('made-offline'));
     await pushNote({ id: 1, ...note('made-offline') });
@@ -403,7 +445,8 @@ describe('working offline', () => {
   it('tries again when the cloud did not answer at the start', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     h.remote.set('a', note('a'));
-    h.online = false; // the cloud read fails...
+    h.online = false; // the cloud never answers...
+    setFirstAnswerTimeoutForTests(30);
     Object.defineProperty(window.navigator, 'onLine', { configurable: true, get: () => true }); // ...though the browser says online
     await startSync(UID);
     expect(phase()).toBe('waiting');

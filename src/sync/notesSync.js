@@ -38,7 +38,7 @@
 // and the fields waiting for a note are kept over the cloud's copy.
 
 import {
-  collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocFromServer, getDocsFromServer,
+  collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocFromServer,
   getDocs, onSnapshot, writeBatch,
 } from 'firebase/firestore';
 import { db as firestoreDb } from '../firebase';
@@ -333,10 +333,11 @@ async function removeLocalNoteByUuid(uuid) {
 // device (pull everything down) and a device that already had notes before
 // sync existed, like your laptop with the 1,784 imported notes (push
 // whatever the cloud doesn't have yet, or only has an older copy of).
-async function performInitialReconciliation(uid) {
-  const [localNotes, remoteSnapshot, pending, bases] = await Promise.all([
+// `remoteSnapshot` is the live listener's first answer that the cloud has confirmed (see
+// startNotesListener): the whole collection, so one read of it serves both this and the listener.
+async function performInitialReconciliation(uid, remoteSnapshot) {
+  const [localNotes, pending, bases] = await Promise.all([
     db.notes.toArray(),
-    getDocsFromServer(collection(firestoreDb, 'users', uid, 'notes')),
     pendingNotes(),
     loadBases(),
   ]);
@@ -428,44 +429,99 @@ async function performInitialReconciliation(uid) {
 // Live listener — keeps this device caught up after the initial sync,
 // including deletions (a doc disappearing fires a 'removed' change here,
 // no separate tombstone bookkeeping needed).
-function attachNotesListener(uid) {
-  const colRef = collection(firestoreDb, 'users', uid, 'notes');
-  return onSnapshot(colRef, async (snapshot) => {
-    const changes = snapshot.docChanges();
-    if (!changes.length) return;
-    const synced = loadSynced(uid);
-    const pending = await pendingNotes();
-    for (const change of changes) {
-      const uuid = change.doc.id;
-      const entry = pending.get(uuid);
-      if (change.type === 'removed') {
-        await db.bases.delete(uuid);
-        synced.delete(uuid);
-        const local = await db.notes.where('uuid').equals(uuid).first();
-        if (local && entry && !entry.deleted
-          && (entry.fields === null || entry.fields.some(f => CONTENT_FIELDS.includes(f)))) {
-          // Deleted elsewhere, but its text was changed here: it comes back, whole.
-          const waiting = await recordNote(uuid, null);
-          sendNote(uid, local, null, waiting.seq);
-        } else {
-          await removeLocalNoteByUuid(uuid);
-          if (entry) await dropNote(uuid);
-        }
-      } else if (change.doc.metadata?.hasPendingWrites) {
-        // Echo of this browser's own write that the server hasn't confirmed:
-        // local is already the newer truth, nothing to take.
+//
+// It is also the start-up read. Reading the collection twice (once for the reconciliation, once for
+// this listener) cost two reads of every note on every page load, and the free plan allows 50,000 reads
+// a day. So the listener's first answer that the cloud has confirmed (`fromCache` false: the whole
+// collection, after the cache caught up) is what the reconciliation runs on. With the persistent
+// cache (firebase.js) that costs only the notes changed since the last visit. An answer from the cache
+// alone says nothing about what was deleted elsewhere, so it is ignored until the cloud answers.
+// Resolves once reconciled; rejects when the cloud does not answer in time or reconciling fails.
+let firstAnswerMs = 20_000;
+export const setFirstAnswerTimeoutForTests = (ms) => { firstAnswerMs = ms; };
+
+function startNotesListener(uid) {
+  return new Promise((resolve, reject) => {
+    let reconciled = false;
+    let finished = false;
+    let queue = Promise.resolve();
+    const finish = (error) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      if (error) { stop(); reject(error); } else resolve();
+    };
+    const timer = setTimeout(
+      () => finish(Object.assign(new Error('no answer from the cloud'), { code: 'unavailable' })),
+      firstAnswerMs,
+    );
+    const stop = onSnapshot(
+      collection(firestoreDb, 'users', uid, 'notes'),
+      { includeMetadataChanges: true },
+      (snapshot) => {
+        // One snapshot at a time, in order.
+        queue = queue.then(async () => {
+          if (uid !== currentUid) return;
+          if (!reconciled) {
+            if (snapshot.metadata?.fromCache) return; // wait for the cloud
+            await performInitialReconciliation(uid, snapshot);
+            if (uid !== currentUid) return;
+            reconciled = true;
+            ready = true;
+            finish();
+            return;
+          }
+          await applyListenerChanges(uid, snapshot);
+        }).catch((e) => {
+          console.error('Notes listener failed:', e?.code || e?.name);
+          if (!reconciled) finish(e);
+        });
+        return queue;
+      },
+      (e) => {
+        console.error('Notes listener error:', e?.code || e);
+        if (!reconciled) finish(e);
+      },
+    );
+    unsubscribeNotes = () => { stop(); finish(); };
+  });
+}
+
+async function applyListenerChanges(uid, snapshot) {
+  const changes = snapshot.docChanges();
+  if (!changes.length) return;
+  const synced = loadSynced(uid);
+  const pending = await pendingNotes();
+  for (const change of changes) {
+    const uuid = change.doc.id;
+    const entry = pending.get(uuid);
+    if (change.type === 'removed') {
+      await db.bases.delete(uuid);
+      synced.delete(uuid);
+      const local = await db.notes.where('uuid').equals(uuid).first();
+      if (local && entry && !entry.deleted
+        && (entry.fields === null || entry.fields.some(f => CONTENT_FIELDS.includes(f)))) {
+        // Deleted elsewhere, but its text was changed here: it comes back, whole.
+        const waiting = await recordNote(uuid, null);
+        sendNote(uid, local, null, waiting.seq);
       } else {
-        const remote = change.doc.data();
-        const base = baseWithOwnWrite(uuid, (await db.bases.get(uuid))?.doc || null, remote);
-        const kept = await applyCloudNote(uid, uuid, remote, entry, base);
-        await db.bases.put({ uuid, doc: remote });
-        if (kept) synced.add(uuid);
+        await removeLocalNoteByUuid(uuid);
+        if (entry) await dropNote(uuid);
       }
+    } else if (change.doc.metadata?.hasPendingWrites) {
+      // Echo of this browser's own write that the server hasn't confirmed:
+      // local is already the newer truth, nothing to take.
+    } else {
+      const remote = change.doc.data();
+      const base = baseWithOwnWrite(uuid, (await db.bases.get(uuid))?.doc || null, remote);
+      const kept = await applyCloudNote(uid, uuid, remote, entry, base);
+      await db.bases.put({ uuid, doc: remote });
+      if (kept) synced.add(uuid);
     }
-    saveSynced(uid, synced);
-    const { default: useNoteStore } = await import('../store/noteStore');
-    useNoteStore.getState().loadNotes(useNoteStore.getState().activeState);
-  }, (e) => console.error('Notes listener error:', e.code || e));
+  }
+  saveSynced(uid, synced);
+  const { default: useNoteStore } = await import('../store/noteStore');
+  useNoteStore.getState().loadNotes(useNoteStore.getState().activeState);
 }
 
 // ─── Settings: pull-on-boot + push-on-change ───────────────────────────────
@@ -550,10 +606,8 @@ async function attemptStart(uid) {
   try {
     await reconcileSettings(uid);
     if (uid !== currentUid) return;
-    await performInitialReconciliation(uid);
+    await startNotesListener(uid); // reconciles on the cloud's first answer, then stays live
     if (uid !== currentUid) return;
-    ready = true;
-    unsubscribeNotes = attachNotesListener(uid);
     setSyncPhase('live');
     lastReplay = replayPending(uid).catch(e => console.error('Outbox replay failed:', e?.code || e?.name));
   } catch (e) {

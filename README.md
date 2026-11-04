@@ -68,6 +68,14 @@ formatting). Two comparisons: "What this edit changed" (against the version befo
 change" (against the note now). Locked notes show no content. The diff is `src/utils/versionDiff.js`; the phone's
 copy is `VersionDiff.kt`, with the same test cases.
 
+## Firestore reads (Round 15)
+
+The free plan allows 50,000 document reads a day and the diary is ~1,800 notes, so never read the whole
+collection twice. `src/firebase.js` opens Firestore with a persistent multi-tab cache; `startNotesListener` in
+`src/sync/notesSync.js` is the only start-up read: it ignores cache-only snapshots (they say nothing about
+deletions) and reconciles on the first cloud-confirmed one. No answer in 20 s means 'waiting' and a retry. Do not
+add `getDocs`/`getDocsFromServer` on `notes`. Caveats are in the Android repo's `docs/architecture.md`.
+
 ## MCP server
 
 `mcp-server/` is a separate small Node package (`npm install` inside it). Setup: `mcp-server/README.md`.

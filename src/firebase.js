@@ -1,6 +1,8 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
+} from 'firebase/firestore';
 
 // Pulled from .env.local (see .env.local.example) — never hardcode these.
 // Note: unlike a server API key, Firebase's web config isn't a secret; it's
@@ -29,5 +31,19 @@ if (missing.length) {
 
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app);
+
+// A cache that survives closing the tab (and is shared by tabs), so that opening the app reads from
+// Firestore only the notes that changed since last time, not the whole diary again. Firestore bills
+// every document it sends, and the free plan allows 50,000 reads a day; the diary is ~1,800 notes.
+// Where the browser has no IndexedDB, or this was already set up, fall back to the plain memory cache.
+function openFirestore() {
+  try {
+    return initializeFirestore(app, {
+      localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+    });
+  } catch {
+    return getFirestore(app);
+  }
+}
+export const db = openFirestore();
 export const googleProvider = new GoogleAuthProvider();
