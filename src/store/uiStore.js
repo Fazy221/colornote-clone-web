@@ -11,6 +11,9 @@ function clampColumns(n) {
   return Math.min(4, Math.max(1, num));
 }
 
+// 'fixed' keeps every screen in a centred column on a wide screen; 'fluid' fills the window.
+export const pageWidthOf = (value) => (value === 'fluid' ? 'fluid' : 'fixed');
+
 const useUIStore = create((set, get) => ({
   // Color filter on home screen (null = all)
   colorFilter: null,
@@ -49,6 +52,11 @@ const useUIStore = create((set, get) => ({
   // Theme
   darkMode: false,
   toggleDarkMode: () => set(s => ({ darkMode: !s.darkMode })),
+
+  // Page width on a wide screen (see PageFrame). Fixed is the default.
+  pageWidth: 'fixed',
+  setPageWidth: (value) => set({ pageWidth: pageWidthOf(value) }),
+  loadPageWidth: async () => set({ pageWidth: pageWidthOf(await getSetting('pageWidth', 'fixed')) }),
 
   // Home screen grid view (desktop only — mobile is always forced to the
   // single-column list, which is what the real app looks like anyway).

@@ -18,6 +18,7 @@ import { ArchiveScreen, TrashScreen } from './screens/ArchiveTrashScreen';
 import ImportScreen from './screens/ImportScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import ConflictsScreen from './screens/ConflictsScreen';
+import PageFrame from './components/layout/PageFrame';
 
 export default function App() {
   const darkMode = useUIStore(s => s.darkMode);
@@ -31,6 +32,9 @@ export default function App() {
 
   // Desktop grid-view default — start reading before HomeScreen mounts.
   useEffect(() => { useUIStore.getState().initHomeGridColumns(); }, []);
+
+  // Fixed or full page width. The store starts on fixed, the default, so most loads don't move.
+  useEffect(() => { useUIStore.getState().loadPageWidth(); }, []);
 
   // Restore persisted dark-mode preference on boot.
   useEffect(() => {
@@ -66,6 +70,7 @@ export default function App() {
       if (saved !== useUIStore.getState().darkMode) {
         useUIStore.getState().toggleDarkMode();
       }
+      await useUIStore.getState().loadPageWidth();
       useNoteStore.getState().loadNotes(useNoteStore.getState().activeState);
     })();
 
@@ -101,6 +106,7 @@ export default function App() {
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <BrowserRouter>
+        <PageFrame>
         <Routes>
           <Route path="/"           element={<HomeScreen />} />
           <Route path="/note/:id"   element={<NoteEditorScreen />} />
@@ -115,6 +121,7 @@ export default function App() {
           <Route path="/settings"   element={<SettingsScreen />} />
           <Route path="/conflicts"  element={<ConflictsScreen />} />
         </Routes>
+        </PageFrame>
       </BrowserRouter>
     </ThemeProvider>
   );

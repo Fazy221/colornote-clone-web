@@ -24,6 +24,8 @@ export default function SettingsScreen() {
 
   const darkMode       = useUIStore(s => s.darkMode);
   const toggleDarkMode = useUIStore(s => s.toggleDarkMode);
+  const pageWidth      = useUIStore(s => s.pageWidth);
+  const setPageWidth   = useUIStore(s => s.setPageWidth);
   const user           = useAuthStore(s => s.user);
   const signOutUser     = useAuthStore(s => s.signOutUser);
 
@@ -44,6 +46,12 @@ export default function SettingsScreen() {
     if (value === null) return;
     setDefaultDesktopView(value);
     await syncSetting('defaultDesktopView', value);
+  };
+
+  const handlePageWidth = async (_e, value) => {
+    if (value === null) return;
+    setPageWidth(value);
+    await syncSetting('pageWidth', value);
   };
 
   const handleDarkMode = async (checked) => {
@@ -122,6 +130,27 @@ export default function SettingsScreen() {
               <ToggleButton value={2}><ViewCompactIcon fontSize="small" sx={{ mr: 0.5 }} />2</ToggleButton>
               <ToggleButton value={3}><ViewModuleIcon fontSize="small" sx={{ mr: 0.5 }} />3</ToggleButton>
               <ToggleButton value={4}><ViewComfyIcon fontSize="small" sx={{ mr: 0.5 }} />4</ToggleButton>
+            </ToggleButtonGroup>
+          </ListItem>
+          <Divider component="li" />
+
+          {/* Page width */}
+          <ListItem sx={{ py: 1.5, flexDirection: 'column', alignItems: 'stretch', gap: 1.5 }}>
+            <ListItemText
+              primary="Page width"
+              secondary="On a wide screen, keep the app in a centred column 880px wide, or let it fill the window. A phone always uses its full width."
+              secondaryTypographyProps={{ sx: { mt: 0.5 } }}
+            />
+            <ToggleButtonGroup
+              exclusive
+              value={pageWidth}
+              onChange={handlePageWidth}
+              size="small"
+              sx={{ alignSelf: 'flex-start' }}
+              aria-label="Page width"
+            >
+              <ToggleButton value="fixed">Centred, 880px</ToggleButton>
+              <ToggleButton value="fluid">Full width</ToggleButton>
             </ToggleButtonGroup>
           </ListItem>
           <Divider component="li" />
