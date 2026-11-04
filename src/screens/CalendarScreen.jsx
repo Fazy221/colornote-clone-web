@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, Typography, IconButton,
@@ -77,6 +77,29 @@ export default function CalendarScreen() {
     setSelectedDate(null);
   };
 
+  // The top bar's calendar button: back to the present month.
+  const goToday = () => {
+    setYear(today.getFullYear());
+    setMonth(today.getMonth());
+    setSelectedDate(null);
+  };
+
+  // Left and right arrow keys step the month (not while typing in a field).
+  const stepRef = useRef(null);
+  stepRef.current = { prevMonth, nextMonth };
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return;
+      const t = e.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') stepRef.current.prevMonth(); else stepRef.current.nextMonth();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const daysInMonth = getDaysInMonth(year, month);
   const firstDow = getFirstDayOfWeek(year, month);
 
@@ -92,8 +115,8 @@ export default function CalendarScreen() {
       <AppBar position="static" elevation={0} sx={{ bgcolor: 'background.paper', color: 'text.primary' }}>
         <Toolbar sx={{ minHeight: 56 }}>
           <Typography variant="h6" sx={{ flex: 1, fontWeight: 400 }}>Calendar</Typography>
-          <CalendarTodayIcon sx={{ fontSize: 20, mr: 1 }} />
-          <IconButton size="small" onClick={() => { setYear(today.getFullYear()); setMonth(today.getMonth()); }}>
+          <IconButton aria-label="Go to this month" title="This month" onClick={goToday}>
+            <CalendarTodayIcon sx={{ fontSize: 20 }} />
           </IconButton>
         </Toolbar>
       </AppBar>

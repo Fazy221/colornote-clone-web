@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { ThemeProvider, CssBaseline, Box, CircularProgress } from '@mui/material';
+import { ThemeProvider, CssBaseline, Box, CircularProgress, Snackbar } from '@mui/material';
 import { buildTheme } from './theme';
 import useUIStore from './store/uiStore';
 import useColorStore from './store/colorStore';
@@ -24,6 +24,7 @@ export default function App() {
   const darkMode = useUIStore(s => s.darkMode);
   const theme = useMemo(() => buildTheme(darkMode), [darkMode]);
   const user = useAuthStore(s => s.user);
+  const toast = useUIStore(s => s.toast);
 
   // Color names + the "show counts" toggle are persisted settings shared by
   // the Color filter modal and the per-note color picker — load once here
@@ -121,6 +122,11 @@ export default function App() {
           <Route path="/settings"   element={<SettingsScreen />} />
           <Route path="/conflicts"  element={<ConflictsScreen />} />
         </Routes>
+        {/* Inside the page column, so with the fixed width the toast sits inside its left edge (PageFrame explains why). */}
+        <Snackbar
+          key={toast?.key} open={Boolean(toast)} message={toast?.message || ''} autoHideDuration={2000}
+          onClose={(_, reason) => { if (reason !== 'clickaway') useUIStore.getState().clearToast(); }}
+        />
         </PageFrame>
       </BrowserRouter>
     </ThemeProvider>

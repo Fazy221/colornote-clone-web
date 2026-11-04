@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useReducer } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, IconButton, TextField,
   Typography, Checkbox, Menu, MenuItem, Divider,
-  Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Button, Snackbar,
-  CircularProgress,
+  Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Button,
+  CircularProgress, InputBase,
 } from '@mui/material';
-import CheckIcon       from '@mui/icons-material/Check';
+import ArrowBackIcon   from '@mui/icons-material/ArrowBack';
+import SaveIcon        from '@mui/icons-material/Save';
+import EditIcon        from '@mui/icons-material/Edit';
 import MoreVertIcon    from '@mui/icons-material/MoreVert';
 import AddCircleOutlineIcon from '@mui/icons-material/AddCircleOutline';
 import ShareIcon       from '@mui/icons-material/Share';
@@ -17,6 +19,12 @@ import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
 import PushPinIcon     from '@mui/icons-material/PushPin';
 import LockIcon        from '@mui/icons-material/Lock';
 import LockOpenIcon    from '@mui/icons-material/LockOpen';
+import SearchIcon      from '@mui/icons-material/Search';
+import KeyboardArrowUpIcon   from '@mui/icons-material/KeyboardArrowUp';
+import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import CloseIcon       from '@mui/icons-material/Close';
+import UndoIcon        from '@mui/icons-material/Undo';
+import RedoIcon        from '@mui/icons-material/Redo';
 
 import ColorPicker          from '../components/common/ColorPicker';
 import FolderPicker         from '../components/common/FolderPicker';
@@ -25,13 +33,12 @@ import MasterPasswordDialog from '../components/common/MasterPasswordDialog';
 import { getColor }         from '../utils/colors';
 import { formatFullDate }   from '../utils/dateUtils';
 import { parseFormat, formatOf, followEdit, toggleStyle, runsOf } from '../utils/textFormat';
+import { findOffsets, markRuns } from '../utils/findInNote';
 import { decryptNoteContent, encryptNoteContent, getNoteCiphertext } from '../utils/crypto';
 import { CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
 import { ARCHIVE_QUESTION } from '../utils/reminders';
 import useNoteStore from '../store/noteStore';
 import useUIStore   from '../store/uiStore';
-
-const AUTOSAVE_DELAY = 800;
 
 // Serialize checklist items → "[ ] text\n[V] text\n..." for encryption
 function serializeItems(items) {
@@ -50,10 +57,14 @@ function parseChecklistStr(str) {
   });
 }
 
-// Only a plain text note carries styling. A locked note's save leaves the field as it is.
-const formatPayloadFor = (type, encrypted) => (fmt) => (type === 'text' && encrypted !== 1 ? { format: fmt } : {});
+// Only a text note carries styling. A locked note keeps its ranges too, in plain text, as on the phone
+// (they show only where styled text sits).
+const formatPayloadFor = (type) => (fmt) => (type === 'text' ? { format: fmt } : {});
 
 const EMPTY_ITEMS = [{ text: '', checked: false }];
+
+// A checklist row with nothing in it is never stored.
+const cleanItems = (list) => (list || []).filter(i => i.text.trim());
 
 export default function NoteEditorScreen() {
   const navigate      = useNavigate();
@@ -65,7 +76,7 @@ export default function NoteEditorScreen() {
 
   const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin, liveReminderIds } = useNoteStore();
   const [archiveAskOpen, setArchiveAskOpen] = useState(false);
-  const [toast, setToast] = useState(null);
+  const showToast = useUIStore(s => s.showToast);
   const masterPassword    = useUIStore(s => s.masterPassword);
   const setMasterPassword = useUIStore(s => s.setMasterPassword);
 
@@ -85,6 +96,18 @@ export default function NoteEditorScreen() {
   // Bold, strikethrough and highlight ranges of a text note (see utils/textFormat.js); shared with the Android app.
   const [format, setFormat]     = useState('');
   const bodyRef = useRef(null);
+  // A text note opens to read, and the pencil starts editing; a new note and a checklist are always editable.
+  const [editing, setEditing] = useState(isNew);
+  // The selected range of the text, so the style buttons can show what the selection already has.
+  const [sel, setSel] = useState({ start: 0, end: 0 });
+  const [, redraw] = useReducer(n => n + 1, 0);
+  const focusEndRef  = useRef(false);
+  const focusItemRef = useRef(null);
+  const itemRefs     = useRef([]);
+  const contentRef   = useRef(null);
+  // Set once the note is being left on purpose, so the safety-net save below stays quiet.
+  const leavingRef   = useRef(false);
+  const latestRef    = useRef(null);
 
   // ── Decrypt state ─────────────────────────────────────────────────────────
   const [locked, setLocked]               = useState(false);
@@ -96,8 +119,11 @@ export default function NoteEditorScreen() {
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  // Find in note: the bar, what was typed, and which hit is in focus.
+  const [finding, setFinding]       = useState(false);
+  const [findQuery, setFindQuery]   = useState('');
+  const [findIndex, setFindIndex]   = useState(0);
 
-  const saveTimer    = useRef(null);
   const isMounted    = useRef(true);
   const currentIdRef = useRef(null);
   // What a save compares against, so only what was edited here is written:
@@ -105,8 +131,6 @@ export default function NoteEditorScreen() {
   //  shownRef - what the editor showed for it (decrypted text, colour, folder)
   const baseRef      = useRef(null);
   const shownRef     = useRef(null);
-  // Edits waiting for the autosave timer; saved on leaving too.
-  const pendingRef   = useRef(null);
   // One save at a time, in order.
   const saveChain    = useRef(Promise.resolve());
   // The latest render's queueSave, so a save on leaving sees the loaded note's
@@ -114,7 +138,29 @@ export default function NoteEditorScreen() {
   const queueSaveRef = useRef(null);
 
   const color = getColor(colorIndex);
-  const spans = type === 'text' && encrypted !== 1 ? parseFormat(format, body.length) : [];
+  const spans = type === 'text' ? parseFormat(format, body.length) : [];
+  const canFind = type === 'text' && !locked;
+  const hits = finding && canFind ? findOffsets(body, findQuery) : [];
+  const focusHit = hits.length ? Math.min(findIndex, hits.length - 1) : 0;
+  const drawn = spans.length > 0 || hits.length > 0;
+
+  const openFind = () => { setMenuAnchor(null); setFinding(true); };
+  const closeFind = () => { setFinding(false); setFindQuery(''); setFindIndex(0); };
+  const stepFind = d => { if (hits.length) setFindIndex((focusHit + d + hits.length) % hits.length); };
+
+  // The hit in focus is brought into view.
+  useEffect(() => {
+    contentRef.current?.querySelector('[data-find-current]')?.scrollIntoView({ block: 'center' });
+  }, [findQuery, findIndex, finding]);
+
+  // Ctrl+F opens the bar on a text note, as on any desktop app.
+  useEffect(() => {
+    const onKey = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && canFind) { e.preventDefault(); setFinding(true); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canFind]);
 
   // ── Decrypt note content ──────────────────────────────────────────────────
   // Content always decrypts with ColorNote's fixed built-in key (see crypto.js)
@@ -195,15 +241,26 @@ export default function NoteEditorScreen() {
     }
     return () => {
       isMounted.current = false;
-      clearTimeout(saveTimer.current);
-      // Leaving any other way than the tick still keeps what was typed.
-      if (pendingRef.current) { queueSaveRef.current?.(pendingRef.current); pendingRef.current = null; }
+      // Leaving any way but Save (the browser Back button, say) still keeps what was typed.
+      const latest = latestRef.current;
+      if (latest?.dirty && !leavingRef.current) queueSaveRef.current?.(latest.values);
     };
   }, [id]);
 
   // ── Save ──────────────────────────────────────────────────────────────────
   // What the editor holds now, as plain values.
   const currentValues = (o = {}) => ({ title, body, items, format, colorIndex, folderId, locked, ...o });
+
+  // Whether anything differs from what was last saved (or, for a new note, whether there is anything to save).
+  const shown = shownRef.current;
+  const hasContent = Boolean(title.trim() || (type === 'text' ? body.trim() : items.some(i => i.text.trim())));
+  const dirty = !loading && !locked && (shown
+    ? title !== shown.title || colorIndex !== shown.colorIndex || folderId !== shown.folderId
+      || (type === 'checklist' ? !sameValue(cleanItems(items), cleanItems(shown.items)) : body !== shown.body || format !== shown.format)
+    : hasContent);
+  const editable = type === 'checklist' || editing;
+  // A text note that is being edited and has nothing new to save: the control leaves edit mode.
+  const closable = type === 'text' && editing && Boolean(noteId) && !dirty;
 
   // The note as it should be stored, from what the editor holds. Text that
   // wasn't edited keeps its stored value, so a locked note isn't re-encrypted
@@ -215,7 +272,8 @@ export default function NoteEditorScreen() {
     const edited = { ...pick(base, CONTENT_FIELDS), colorIndex: v.colorIndex, folderId: v.folderId };
     if (v.title !== shown.title) edited.title = v.title;
     const isChecklist = type === 'checklist';
-    const bodyEdited = isChecklist ? !sameValue(v.items, shown.items) : v.body !== shown.body;
+    const rows = cleanItems(v.items);
+    const bodyEdited = isChecklist ? !sameValue(rows, cleanItems(shown.items)) : v.body !== shown.body;
     if (bodyEdited && !(encrypted === 1 && v.locked)) {
       if (encrypted === 1) {
         // Content uses ColorNote's fixed built-in key (see crypto.js), so this
@@ -224,7 +282,7 @@ export default function NoteEditorScreen() {
         try {
           if (isChecklist) {
             edited.note = null;
-            edited.items = [{ text: await encryptNoteContent(serializeItems(v.items)), checked: false }];
+            edited.items = [{ text: await encryptNoteContent(serializeItems(rows)), checked: false }];
           } else {
             edited.note = await encryptNoteContent(v.body);
             edited.items = null;
@@ -235,13 +293,13 @@ export default function NoteEditorScreen() {
         }
       } else if (isChecklist) {
         edited.note = null;
-        edited.items = v.items;
+        edited.items = rows;
       } else {
         edited.note = v.body;
         edited.items = null;
       }
     }
-    if (type === 'text' && encrypted !== 1 && v.format !== shown.format) edited.format = v.format;
+    if (type === 'text' && v.format !== shown.format) edited.format = v.format;
     return edited;
   };
 
@@ -249,7 +307,7 @@ export default function NoteEditorScreen() {
     if (!currentIdRef.current) {
       const hasContent = v.title.trim() || (type === 'text' ? v.body.trim() : v.items.some(i => i.text.trim()));
       if (!hasContent) return;
-      const content = type === 'checklist' ? { note: null, items: v.items } : { note: v.body, items: null };
+      const content = type === 'checklist' ? { note: null, items: cleanItems(v.items) } : { note: v.body, items: null };
       const newId = await createNote({
         title: v.title, type, colorIndex: v.colorIndex, folderId: v.folderId, encrypted, importance, calendarDate,
         ...content, ...formatPayloadFor(type, encrypted)(v.format),
@@ -278,69 +336,138 @@ export default function NoteEditorScreen() {
   const queueSave = (v) => {
     saveChain.current = saveChain.current
       .then(() => doSave(v))
+      .then(() => { if (isMounted.current) redraw(); })
       .catch(e => console.error('Saving the note failed:', e?.name || 'Error'));
     return saveChain.current;
   };
   queueSaveRef.current = queueSave;
-
-  // ── Auto-save ─────────────────────────────────────────────────────────────
-  const scheduleSave = (overrides = {}) => {
-    clearTimeout(saveTimer.current);
-    const v = currentValues(overrides);
-    pendingRef.current = v;
-    saveTimer.current = setTimeout(() => {
-      if (pendingRef.current !== v) return;
-      pendingRef.current = null;
-      queueSave(v);
-    }, AUTOSAVE_DELAY);
-  };
+  latestRef.current = { dirty, values: currentValues() };
 
   // ── Field change handlers ─────────────────────────────────────────────────
-  const handleTitleChange  = v  => { setTitle(v);  scheduleSave({ title: v }); };
+  // Nothing is written until Save (see handleSave).
+  const handleTitleChange  = v  => setTitle(v);
+  // Undo and redo for the text and its styling together (the browser's own undo knows nothing of styles).
+  // Typing in one go is a single step; a pause, or a style change, starts a new one.
+  const history = useRef({ past: [], future: [], lastAt: 0, lastKind: '' });
+  const record = kind => {
+    const h = history.current;
+    const now = Date.now();
+    if (!(kind === 'type' && h.lastKind === 'type' && now - h.lastAt < 1000)) {
+      h.past.push({ body, format, caret: bodyRef.current?.selectionStart ?? body.length });
+      if (h.past.length > 200) h.past.shift();
+    }
+    h.future = [];
+    h.lastAt = now;
+    h.lastKind = kind;
+  };
+  const goTo = (snap) => {
+    setBody(snap.body);
+    setFormat(snap.format);
+    requestAnimationFrame(() => {
+      const el = bodyRef.current;
+      if (!el) return;
+      el.focus();
+      const at = Math.min(snap.caret, el.value.length);
+      el.setSelectionRange(at, at);
+    });
+  };
+  const undo = () => {
+    const h = history.current;
+    const snap = h.past.pop();
+    if (!snap) return;
+    h.future.push({ body, format, caret: bodyRef.current?.selectionStart ?? body.length });
+    h.lastKind = '';
+    goTo(snap);
+  };
+  const redo = () => {
+    const h = history.current;
+    const snap = h.future.pop();
+    if (!snap) return;
+    h.past.push({ body, format, caret: bodyRef.current?.selectionStart ?? body.length });
+    h.lastKind = '';
+    goTo(snap);
+  };
   const handleBodyChange   = v  => {
+    record('type');
     // The ranges follow the text, so styling never slides onto other words.
-    const next = formatOf(followEdit(parseFormat(format, body.length), body, v));
-    setBody(v); setFormat(next); scheduleSave({ body: v, format: next });
+    setFormat(formatOf(followEdit(parseFormat(format, body.length), body, v)));
+    setBody(v);
   };
   const handleStyle = style => {
     const el = bodyRef.current;
     if (!el || el.selectionStart === el.selectionEnd) return;
-    const next = formatOf(toggleStyle(parseFormat(format, body.length), el.selectionStart, el.selectionEnd, style));
-    setFormat(next); scheduleSave({ format: next });
+    record('style');
+    setFormat(formatOf(toggleStyle(parseFormat(format, body.length), el.selectionStart, el.selectionEnd, style)));
   };
-  const handleColorChange  = ci => { setColorIndex(ci); scheduleSave({ colorIndex: ci }); };
-  const handleFolderChange = fid => { setFolderId(fid); scheduleSave({ folderId: fid }); };
+  const handleColorChange  = ci => setColorIndex(ci);
+  const handleFolderChange = fid => setFolderId(fid);
 
   // Checklist
-  const handleItemText  = (idx, text) => {
-    const next = items.map((it, i) => i === idx ? { ...it, text } : it);
-    setItems(next); scheduleSave({ items: next });
-  };
-  const handleItemCheck = idx => {
-    const next = items.map((it, i) => i === idx ? { ...it, checked: !it.checked } : it);
-    setItems(next); scheduleSave({ items: next });
-  };
+  const handleItemText  = (idx, text) => setItems(items.map((it, i) => i === idx ? { ...it, text } : it));
+  const handleItemCheck = idx => setItems(items.map((it, i) => i === idx ? { ...it, checked: !it.checked } : it));
+  // A new row takes the cursor, so a list can be typed without the mouse.
   const addItem = () => {
-    const next = [...items, { text: '', checked: false }];
-    setItems(next); scheduleSave({ items: next });
+    focusItemRef.current = items.length;
+    setItems([...items, { text: '', checked: false }]);
   };
   const removeItem = idx => {
     if (items.length === 1) return;
-    const next = items.filter((_, i) => i !== idx);
-    setItems(next); scheduleSave({ items: next });
+    focusItemRef.current = Math.max(0, idx - 1);
+    setItems(items.filter((_, i) => i !== idx));
   };
+  useEffect(() => {
+    const at = focusItemRef.current;
+    if (at === null) return;
+    focusItemRef.current = null;
+    itemRefs.current[at]?.focus();
+  }, [items]);
+
+  // The pencil: edit mode, with the cursor at the end of the note and the end in view.
+  const startEditing = () => { focusEndRef.current = true; setEditing(true); };
+  useEffect(() => {
+    if (!editing || !focusEndRef.current) return;
+    focusEndRef.current = false;
+    const el = bodyRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    contentRef.current?.scrollTo({ top: contentRef.current.scrollHeight });
+  }, [editing]);
 
   // ── Save on back ──────────────────────────────────────────────────────────
   // Writes only what was edited here; a note that was only read stays as it is.
-  const handleBack = async () => {
-    clearTimeout(saveTimer.current);
-    pendingRef.current = null;
+  const handleBack = () => { leavingRef.current = true; navigate(-1); };
+
+  // The only way an edit is written from the screen; the note stays open.
+  const handleSave = async () => {
+    if (!dirty) return;
     await queueSave(currentValues());
-    navigate(-1);
+    if (!isMounted.current) return;
+    setEditing(false);
+    // Rows left empty are gone once saved, as they were not stored.
+    if (type === 'checklist') setItems(list => (cleanItems(list).length ? cleanItems(list) : EMPTY_ITEMS));
   };
+  const saveRef = useRef(null);
+  saveRef.current = handleSave;
+  // Escape leaves the note, unless a menu, dialog or the find bar is open (those take Escape themselves).
+  const overlayOpen = Boolean(menuAnchor || colorPickerOpen || folderPickerOpen || deleteDialogOpen || archiveAskOpen || pwDialogOpen || finding);
+  const escapeRef = useRef(null);
+  escapeRef.current = () => { if (!overlayOpen) handleBack(); };
+  useEffect(() => {
+    const onKey = e => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveRef.current?.(); }
+      if (e.key === 'Escape' && !e.defaultPrevented && !e.isComposing) escapeRef.current?.();
+    };
+    // Closing the tab with unsaved text asks first.
+    const onUnload = e => { if (latestRef.current?.dirty) e.preventDefault(); };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('beforeunload', onUnload);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('beforeunload', onUnload); };
+  }, []);
 
   const handleDelete = async () => {
     setDeleteDialogOpen(false);
+    leavingRef.current = true;
     if (currentIdRef.current) await trashNote(currentIdRef.current);
     navigate(-1);
   };
@@ -348,7 +475,7 @@ export default function NoteEditorScreen() {
   // What Share and Copy note hand over: the title, a blank line, then the text.
   const shareText = () => {
     const text = type === 'checklist'
-      ? items.map(i => `${i.checked ? '[V]' : '[ ]'} ${i.text}`).join('\n')
+      ? cleanItems(items).map(i => `${i.checked ? '[V]' : '[ ]'} ${i.text}`).join('\n')
       : body;
     return title ? `${title}\n\n${text}` : text;
   };
@@ -366,25 +493,22 @@ export default function NoteEditorScreen() {
     try {
       if (locked) throw new Error('locked');
       await navigator.clipboard.writeText(shareText());
-      setToast('Copied to clipboard');
+      showToast('Copied to clipboard');
     } catch {
-      setToast("Can't copy this note");
+      showToast("Can't copy this note");
     }
   };
 
-  // Saves what is waiting for the autosave timer, so Duplicate and Archive
-  // act on what was typed.
+  // Saves what was typed, so Duplicate and Archive act on it.
   const flushSave = async () => {
-    clearTimeout(saveTimer.current);
-    const v = pendingRef.current;
-    pendingRef.current = null;
-    if (v) await queueSave(v);
+    if (dirty) await queueSave(currentValues());
     else await saveChain.current;
   };
 
   const handleDuplicate = async () => {
     setMenuAnchor(null);
     await flushSave();
+    leavingRef.current = true;
     await duplicateNote(currentIdRef.current);
     navigate(-1);
   };
@@ -394,12 +518,14 @@ export default function NoteEditorScreen() {
     setMenuAnchor(null);
     await flushSave();
     if ((await liveReminderIds([currentIdRef.current])).length) { setArchiveAskOpen(true); return; }
+    leavingRef.current = true;
     await archiveNote(currentIdRef.current);
     navigate(-1);
   };
 
   const confirmArchive = async () => {
     setArchiveAskOpen(false);
+    leavingRef.current = true;
     await archiveNote(currentIdRef.current, true);
     navigate(-1);
   };
@@ -415,10 +541,10 @@ export default function NoteEditorScreen() {
   // ── Lock session ─────────────────────────────────────────────────────────
   const handleLockSession = () => {
     // Save what was typed before the text is hidden.
-    clearTimeout(saveTimer.current);
-    if (pendingRef.current) { queueSave(pendingRef.current); pendingRef.current = null; }
+    if (dirty) queueSave(currentValues());
     setMasterPassword(null);
     setLocked(true);
+    history.current = { past: [], future: [], lastAt: 0, lastKind: '' };
     setBody('');
     setItems([{ text: '', checked: false }]);
     setMenuAnchor(null);
@@ -439,10 +565,10 @@ export default function NoteEditorScreen() {
       <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: color.bg }}>
         <AppBar position="static" elevation={0} sx={{ bgcolor: color.bg, color: color.text }}>
           <Toolbar sx={{ minHeight: 56, px: 1 }}>
-            <IconButton onClick={() => navigate(-1)} sx={{ color: color.text }}>
-              <CheckIcon />
+            <IconButton aria-label="Back" onClick={() => navigate(-1)} sx={{ color: color.text }}>
+              <ArrowBackIcon />
             </IconButton>
-            <Box sx={{ flex: 1, mx: 1, bgcolor: 'rgba(255,255,255,0.9)', borderRadius: '4px', px: 1.5, py: 0.75 }}>
+            <Box sx={{ flex: 1, mx: 1, bgcolor: 'rgba(255,255,255,0.9)', border: '1px solid rgba(0,0,0,0.3)', borderRadius: '4px', px: 1.5, py: 0.75 }}>
               <Typography sx={{ fontSize: '0.95rem', color: '#212121' }}>{title || ''}</Typography>
             </Box>
             <Box sx={{ width: 32, height: 32, borderRadius: '4px', bgcolor: color.bg, border: `2px solid ${color.border}` }} />
@@ -478,8 +604,13 @@ export default function NoteEditorScreen() {
       {/* Top bar */}
       <AppBar position="static" elevation={0} sx={{ bgcolor: color.bg, color: color.text }}>
         <Toolbar sx={{ minHeight: 56, px: 1, gap: 1 }}>
-          <IconButton onClick={handleBack} sx={{ color: color.text }}>
-            <CheckIcon />
+          {/* Save while there is something to save, otherwise the way back. */}
+          <IconButton
+            aria-label={dirty ? 'Save' : closable ? 'Stop editing' : 'Back'}
+            onClick={dirty ? handleSave : closable ? () => setEditing(false) : handleBack}
+            sx={{ color: color.text }}
+          >
+            {dirty ? <SaveIcon /> : closable ? <CloseIcon /> : <ArrowBackIcon />}
           </IconButton>
           <TextField
             value={title}
@@ -490,11 +621,19 @@ export default function NoteEditorScreen() {
             sx={{
               '& .MuiOutlinedInput-root': {
                 bgcolor: 'rgba(255,255,255,0.9)', borderRadius: '4px',
-                '& fieldset': { border: 'none' },
+                // A visible edge, so a white note's white field doesn't vanish into it.
+                '& .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(0,0,0,0.3)', borderWidth: 1 },
+                '&:hover .MuiOutlinedInput-notchedOutline': { borderColor: 'rgba(0,0,0,0.5)' },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: '#00BCD4', borderWidth: 1 },
               },
               '& input': { fontSize: '0.95rem', py: 0.75, px: 1.5 },
             }}
           />
+          {type === 'text' && !editing && (
+            <IconButton aria-label="Edit" onClick={startEditing} sx={{ color: color.text }}>
+              <EditIcon />
+            </IconButton>
+          )}
           <Box
             onClick={() => setColorPickerOpen(true)}
             sx={{ width: 32, height: 32, flexShrink: 0, borderRadius: '4px', bgcolor: color.bg, border: `2px solid ${color.border}`, cursor: 'pointer' }}
@@ -508,7 +647,7 @@ export default function NoteEditorScreen() {
       {/* Status line */}
       <Box sx={{ px: 2, py: 0.5, bgcolor: color.bg, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-          <Typography variant="caption" sx={{ color: color.text, opacity: 0.6 }}>Editing</Typography>
+          <Typography variant="caption" sx={{ color: color.text, opacity: 0.6 }}>{editable ? 'Editing' : 'Viewing'}</Typography>
           {encrypted === 1 && <LockOpenIcon sx={{ fontSize: 12, color: color.text, opacity: 0.5 }} />}
         </Box>
         <Typography variant="caption" sx={{ color: color.text, opacity: 0.6 }}>
@@ -516,24 +655,32 @@ export default function NoteEditorScreen() {
         </Typography>
       </Box>
 
+      {/* Find in note */}
+      {finding && canFind && (
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 1.5, height: 44, bgcolor: '#F2F2F2', color: '#555' }}>
+          <SearchIcon sx={{ fontSize: 20 }} />
+          <InputBase
+            autoFocus fullWidth placeholder="Find in note" value={findQuery}
+            onChange={e => { setFindQuery(e.target.value); setFindIndex(0); }}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); }
+              if (e.key === 'Escape') closeFind();
+            }}
+            sx={{ fontSize: '0.95rem', color: '#111', borderBottom: '2px solid #009688', py: 0, mx: 0.5 }}
+          />
+          {findQuery && <Typography variant="body2" sx={{ minWidth: 36, textAlign: 'right' }}>{hits.length ? `${focusHit + 1}/${hits.length}` : '0'}</Typography>}
+          <IconButton size="small" aria-label="Previous match" disabled={!hits.length} onClick={() => stepFind(-1)}><KeyboardArrowUpIcon /></IconButton>
+          <IconButton size="small" aria-label="Next match" disabled={!hits.length} onClick={() => stepFind(1)}><KeyboardArrowDownIcon /></IconButton>
+          <IconButton size="small" aria-label="Close find" onClick={closeFind}><CloseIcon /></IconButton>
+        </Box>
+      )}
+
       {/* Content */}
-      <Box sx={{ flex: 1, overflowY: 'auto' }}>
+      <Box ref={contentRef} sx={{ flex: 1, overflowY: 'auto', pb: editing ? 9 : 0 }}>
         {type === 'text' ? (
           <>
-            {encrypted !== 1 && (
-              <Box sx={{ px: 2, pt: 0.5, display: 'flex', gap: 0.5 }}>
-                {[['b', 'B', { fontWeight: 700 }], ['s', 'S', { textDecoration: 'line-through' }],
-                  ['h', 'H', { background: 'rgba(255,235,59,0.8)' }]].map(([style, label, look]) => (
-                  <Button
-                    key={style} size="small" aria-label={{ b: 'Bold', s: 'Strikethrough', h: 'Highlight' }[style]}
-                    onMouseDown={e => e.preventDefault()} onClick={() => handleStyle(style)}
-                    sx={{ minWidth: 32, color: color.text, ...look }}
-                  >{label}</Button>
-                ))}
-              </Box>
-            )}
             <Box sx={{ position: 'relative' }}>
-              {spans.length > 0 && (
+              {drawn && (
                 // The text is drawn here, in its styles, and the textarea above it is see-through, so the
                 // caret and selection stay native. Same font and wrapping, so the two line up.
                 <Box aria-hidden sx={{
@@ -541,11 +688,12 @@ export default function NoteEditorScreen() {
                   typography: 'body1', fontSize: '0.95rem', lineHeight: '2rem', color: color.text,
                   whiteSpace: 'pre-wrap', overflowWrap: 'break-word',
                 }}>
-                  {runsOf(body, spans).map((run, i) => (
-                    <span key={i} style={{
+                  {markRuns(runsOf(body, spans), hits, findQuery.length, focusHit).map((run, i) => (
+                    <span key={i} data-find-current={run.hit === 2 ? '' : undefined} style={{
+                      borderRadius: run.hit ? 2 : undefined,
                       fontWeight: run.styles.includes('b') ? 700 : undefined,
                       textDecoration: run.styles.includes('s') ? 'line-through' : undefined,
-                      background: run.styles.includes('h') ? 'rgba(255,235,59,0.8)' : undefined,
+                      background: run.hit === 2 ? '#FF9800' : run.hit === 1 ? '#FFCC80' : run.styles.includes('h') ? 'rgba(255,235,59,0.8)' : undefined,
                     }}>{run.text}</span>
                   ))}
                   {'​'}
@@ -564,10 +712,20 @@ export default function NoteEditorScreen() {
                     fontSize: '0.95rem', lineHeight: '2rem',
                     background: `repeating-linear-gradient(transparent, transparent calc(2rem - 1px), rgba(0,0,0,0.06) calc(2rem - 1px), rgba(0,0,0,0.06) 2rem)`,
                     minHeight: 'calc(100vh - 160px)',
-                    color: spans.length > 0 ? 'transparent' : color.text, caretColor: '#00BCD4',
+                    color: drawn ? 'transparent' : color.text, caretColor: '#00BCD4',
                   },
                 }}
-                InputProps={{ disableUnderline: true }}
+                InputProps={{ disableUnderline: true, readOnly: !editable }}
+                inputProps={{
+                  onSelect: e => setSel({ start: e.target.selectionStart, end: e.target.selectionEnd }),
+                  // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y use the same history as the buttons.
+                  onKeyDown: e => {
+                    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+                    const k = e.key.toLowerCase();
+                    if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+                    else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+                  },
+                }}
               />
             </Box>
           </>
@@ -581,10 +739,11 @@ export default function NoteEditorScreen() {
                 />
                 <TextField
                   value={item.text} onChange={e => handleItemText(idx, e.target.value)}
+                  inputRef={el => { itemRefs.current[idx] = el; }}
                   placeholder="Add item" variant="standard" fullWidth
                   autoFocus={isNew && idx === 0}
                   onKeyDown={e => {
-                    if (e.key === 'Enter') { e.preventDefault(); addItem(); }
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) { e.preventDefault(); addItem(); }
                     if (e.key === 'Backspace' && item.text === '') removeItem(idx);
                   }}
                   sx={{
@@ -603,6 +762,39 @@ export default function NoteEditorScreen() {
         )}
       </Box>
 
+      {/* Styles: floats at the bottom while editing. A button shows as on when the selection has that style. */}
+      {type === 'text' && editing && (
+        <Box sx={{
+          position: 'fixed', bottom: 20, left: '50%', transform: 'translateX(-50%)', zIndex: 1100,
+          display: 'flex', gap: 0.5, p: 0.5, bgcolor: '#FFFFFF', borderRadius: '8px', boxShadow: '0 2px 10px rgba(0,0,0,0.28)',
+        }}>
+          {[['Undo', UndoIcon, undo, history.current.past.length], ['Redo', RedoIcon, redo, history.current.future.length]].map(([label, Icon, act, count]) => (
+            <IconButton
+              key={label} size="small" aria-label={label} disabled={!count} disableRipple
+              onMouseDown={e => e.preventDefault()} onClick={act}
+              sx={{ color: '#212121', '&.Mui-disabled': { color: 'rgba(0,0,0,0.3)' }, '&:hover': { bgcolor: 'transparent' } }}
+            ><Icon fontSize="small" /></IconButton>
+          ))}
+          <Divider orientation="vertical" flexItem sx={{ mx: 0.5, my: 0.75 }} />
+          {[['b', 'B', { fontWeight: 800 }], ['s', 'S', { textDecoration: 'line-through' }],
+            ['h', 'H', { background: 'rgba(255,235,59,0.8)' }]].map(([style, label, on]) => {
+            const point = sel.start === sel.end;
+            const active = spans.some(sp => sp.style === style && (point
+              ? sp.start < sel.start && sel.start <= sp.end
+              : sp.start <= sel.start && sp.end >= sel.end));
+            const look = active ? on : { fontWeight: 400 };
+            return (
+              <Button
+                key={style} size="small" disableRipple aria-pressed={active}
+                aria-label={{ b: 'Bold', s: 'Strikethrough', h: 'Highlight' }[style]}
+                onMouseDown={e => e.preventDefault()} onClick={() => handleStyle(style)}
+                sx={{ minWidth: 40, color: '#212121', ...look, '&:hover': { ...look, bgcolor: look.background ? undefined : 'transparent' } }}
+              >{label}</Button>
+            );
+          })}
+        </Box>
+      )}
+
       {/* Color picker */}
       <ColorPicker open={colorPickerOpen} currentColor={colorIndex} onSelect={handleColorChange} onClose={() => setColorPickerOpen(false)} />
       <FolderPicker open={folderPickerOpen} current={folderId} onSelect={handleFolderChange} onClose={() => setFolderPickerOpen(false)} />
@@ -618,6 +810,11 @@ export default function NoteEditorScreen() {
         <MenuItem onClick={() => { setMenuAnchor(null); handleShare(); }}>
           <ShareIcon sx={{ mr: 1.5, fontSize: 20 }} /> Share
         </MenuItem>
+        {canFind && (
+          <MenuItem onClick={openFind}>
+            <SearchIcon sx={{ mr: 1.5, fontSize: 20 }} /> Find
+          </MenuItem>
+        )}
         <MenuItem onClick={handleCopy}>
           <ContentCopyIcon sx={{ mr: 1.5, fontSize: 20 }} /> Copy note
         </MenuItem>
@@ -667,8 +864,6 @@ export default function NoteEditorScreen() {
           <Button onClick={confirmArchive}>OK</Button>
         </DialogActions>
       </Dialog>
-
-      <Snackbar open={Boolean(toast)} message={toast || ''} autoHideDuration={2000} onClose={() => setToast(null)} />
 
       {/* Password dialog — can also appear mid-session if session was locked */}
       <MasterPasswordDialog

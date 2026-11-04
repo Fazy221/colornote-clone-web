@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import useUIStore from './uiStore';
 import { db, getNotesByState, searchNotes, getSetting } from '../db/database';
 import { pushNote, pushNoteDeletion, syncSetting } from '../sync/notesSync';
 import { BUMP_FIELDS, planEditorSave, sameValue } from '../utils/noteFields';
@@ -7,6 +8,9 @@ import { noteFromFile, planImport } from '../utils/importPlan';
 import { planResolution } from '../utils/conflicts';
 
 const ENDED_FIELDS = ['state', ...Object.keys(ENDED_REMINDER)];
+
+// A short message at the bottom of the window.
+const toast = (message) => useUIStore.getState().showToast(message);
 
 const useNoteStore = create((set, get) => ({
   notes: [],
@@ -50,6 +54,7 @@ const useNoteStore = create((set, get) => ({
     });
     await get().loadNotes('normal');
     pushNote(await db.notes.get(id));
+    toast('Note created');
     return id;
   },
 
@@ -68,6 +73,7 @@ const useNoteStore = create((set, get) => ({
     await db.notes.update(id, patch);
     await get().loadNotes(get().activeState);
     pushNote(await db.notes.get(id), Object.keys(patch));
+    toast('Note updated');
   },
 
   // Saves what the note editor holds (see planEditorSave). Returns the note's
@@ -96,6 +102,7 @@ const useNoteStore = create((set, get) => ({
     await get().loadNotes(get().activeState);
     if (copy) pushNote(copy);
     pushNote(await db.notes.get(savedId), fields ?? undefined);
+    toast('Note saved');
     return savedId;
   },
 
@@ -106,6 +113,7 @@ const useNoteStore = create((set, get) => ({
     await db.notes.update(id, { state: 'trash' });
     await get().loadNotes(get().activeState);
     pushNote(await db.notes.get(id), ['state']);
+    toast('Moved to trash');
   },
 
   // Archive — same reasoning as trashNote. endReminder: the owner agreed to
@@ -119,6 +127,7 @@ const useNoteStore = create((set, get) => ({
     await db.notes.update(id, { state: 'normal' });
     await get().loadNotes(get().activeState);
     pushNote(await db.notes.get(id), ['state']);
+    toast('Restored');
   },
 
   // A choice made on the conflicts screen (see planResolution in utils/conflicts.js). Each step is an
@@ -135,6 +144,7 @@ const useNoteStore = create((set, get) => ({
     await db.notes.delete(id);
     await get().loadNotes(get().activeState);
     if (note?.uuid) pushNoteDeletion(note.uuid);
+    toast('Note deleted');
   },
 
   // Duplicate. The copy is a new note, so it carries no id from the old app.
@@ -146,6 +156,7 @@ const useNoteStore = create((set, get) => ({
     const newId = await db.notes.add({ ...rest, uuid: crypto.randomUUID(), createdAt: now, modifiedAt: now });
     await get().loadNotes('normal');
     pushNote(await db.notes.get(newId));
+    toast('Note duplicated');
   },
 
   // Toggle pin/importance — organizational (just reordering, not editing
@@ -194,6 +205,7 @@ const useNoteStore = create((set, get) => ({
     await get().loadNotes(get().activeState);
     (await db.notes.where('id').anyOf(ids).toArray())
       .forEach(n => pushNote(n, ending.includes(n.id) ? ENDED_FIELDS : ['state']));
+    toast('Archived');
   },
 
   trashNotes: async (ids) => {
@@ -201,6 +213,7 @@ const useNoteStore = create((set, get) => ({
     await db.notes.where('id').anyOf(ids).modify({ state: 'trash' });
     await get().loadNotes(get().activeState);
     (await db.notes.where('id').anyOf(ids).toArray()).forEach(n => pushNote(n, ['state']));
+    toast('Moved to trash');
   },
 
   setColorForNotes: async (ids, colorIndex) => {

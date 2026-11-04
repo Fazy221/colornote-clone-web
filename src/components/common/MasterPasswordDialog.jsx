@@ -88,14 +88,16 @@ export default function MasterPasswordDialog({ open, onSuccess, onClose }) {
         <TextField
           inputRef={inputRef}
           fullWidth
-          type="password"
+          // A plain text field drawn as dots: a real password field makes the browser offer to save it.
+          type="text"
           value={password}
           onChange={e => { setPassword(e.target.value); setError(''); }}
           onKeyDown={e => e.key === 'Enter' && handleSubmit()}
           variant="standard"
           disabled={loading || mode === 'checking'}
-          autoComplete="current-password"
-          sx={{ '& input': { fontSize: '1.1rem', letterSpacing: 4 } }}
+          autoComplete="off"
+          inputProps={{ autoCorrect: 'off', autoCapitalize: 'off', spellCheck: false, 'data-lpignore': 'true', 'data-1p-ignore': 'true' }}
+          sx={{ '& input': { fontSize: '1.1rem', letterSpacing: 4, WebkitTextSecurity: 'disc' } }}
         />
       </DialogContent>
       <DialogActions sx={{ px: 2, pb: 1.5 }}>

@@ -39,6 +39,11 @@ const useUIStore = create((set, get) => ({
   clearSelection: () => set({ selectedIds: new Set(), selectionMode: false }),
   selectAll: (ids) => set({ selectedIds: new Set(ids), selectionMode: true }),
 
+  // One short message at the bottom of the window (see App), for what was just done.
+  toast: null,
+  showToast: (message) => set({ toast: { message, key: Date.now() } }),
+  clearToast: () => set({ toast: null }),
+
   // Master password (in-memory only, never persisted)
   masterPassword: null,
   setMasterPassword: (pw) => set({ masterPassword: pw }),

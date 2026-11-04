@@ -11,7 +11,6 @@ import MoreVertIcon from '@mui/icons-material/MoreVert';
 import NotesIcon from '@mui/icons-material/Notes';
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
-import WorkspacePremiumIcon from '@mui/icons-material/WorkspacePremium';
 import CloseIcon from '@mui/icons-material/Close';
 import SelectAllIcon from '@mui/icons-material/SelectAll';
 import ColorLensIcon from '@mui/icons-material/ColorLens';
@@ -517,11 +516,6 @@ export default function HomeScreen() {
             <ListItem button onClick={() => handleAdd('checklist')} sx={{ borderRadius: 1 }}>
               <ListItemIcon sx={{ minWidth: 36 }}><CheckBoxIcon /></ListItemIcon>
               <ListItemText primary="Checklist" />
-            </ListItem>
-            <Divider sx={{ my: 0.5 }} />
-            <ListItem disabled sx={{ borderRadius: 1 }}>
-              <ListItemIcon sx={{ minWidth: 36 }}><WorkspacePremiumIcon /></ListItemIcon>
-              <ListItemText primary="Premium" />
             </ListItem>
           </List>
         </DialogContent>

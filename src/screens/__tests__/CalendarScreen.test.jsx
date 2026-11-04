@@ -1,0 +1,42 @@
+import React from 'react';
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+
+vi.mock('../../db/database', () => ({ db: { notes: { filter: () => ({ toArray: async () => [] }) } } }));
+vi.mock('../../components/layout/BottomNav', () => ({ default: () => null }));
+
+import CalendarScreen from '../CalendarScreen';
+
+const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+const label = (offset) => {
+  const d = new Date();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + offset);
+  return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+};
+
+describe('the calendar screen', () => {
+  it('steps the month with the arrow keys and returns to this month from the top bar', () => {
+    render(<MemoryRouter><CalendarScreen /></MemoryRouter>);
+    expect(screen.getByText(label(0))).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(screen.getByText(label(1))).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    expect(screen.getByText(label(2))).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    expect(screen.getByText(label(-1))).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Go to this month'));
+    expect(screen.getByText(label(0))).toBeTruthy();
+  });
+
+  it('leaves the arrow keys alone while typing in a field', () => {
+    render(<MemoryRouter><><input data-testid="field" /><CalendarScreen /></></MemoryRouter>);
+    fireEvent.keyDown(screen.getByTestId('field'), { key: 'ArrowRight' });
+    expect(screen.getByText(label(0))).toBeTruthy();
+  });
+});
