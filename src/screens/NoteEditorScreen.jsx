@@ -25,6 +25,7 @@ import { getColor }         from '../utils/colors';
 import { formatFullDate }   from '../utils/dateUtils';
 import { parseFormat, formatOf, followEdit, toggleStyle, runsOf } from '../utils/textFormat';
 import { decryptNoteContent, encryptNoteContent, getNoteCiphertext } from '../utils/crypto';
+import { CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
 import useNoteStore from '../store/noteStore';
 import useUIStore   from '../store/uiStore';
 
@@ -50,6 +51,8 @@ function parseChecklistStr(str) {
 // Only a plain text note carries styling. A locked note's save leaves the field as it is.
 const formatPayloadFor = (type, encrypted) => (fmt) => (type === 'text' && encrypted !== 1 ? { format: fmt } : {});
 
+const EMPTY_ITEMS = [{ text: '', checked: false }];
+
 export default function NoteEditorScreen() {
   const navigate      = useNavigate();
   const { id }        = useParams();
@@ -58,7 +61,7 @@ export default function NoteEditorScreen() {
   const initialType   = searchParams.get('type') || 'text';
   const initialDate   = searchParams.get('date')  || null;
 
-  const { getNoteById, createNote, updateNote, trashNote, archiveNote, duplicateNote, togglePin } = useNoteStore();
+  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin } = useNoteStore();
   const masterPassword    = useUIStore(s => s.masterPassword);
   const setMasterPassword = useUIStore(s => s.setMasterPassword);
 
@@ -93,11 +96,20 @@ export default function NoteEditorScreen() {
   const saveTimer    = useRef(null);
   const isMounted    = useRef(true);
   const currentIdRef = useRef(null);
-  // Keep a ref to the raw note for re-decryption after password entry
-  const rawNoteRef   = useRef(null);
+  // What a save compares against, so only what was edited here is written:
+  //  baseRef  - the stored note as opened or last saved (ciphertext if locked)
+  //  shownRef - what the editor showed for it (decrypted text, colour, folder)
+  const baseRef      = useRef(null);
+  const shownRef     = useRef(null);
+  // Edits waiting for the autosave timer; saved on leaving too.
+  const pendingRef   = useRef(null);
+  // One save at a time, in order.
+  const saveChain    = useRef(Promise.resolve());
+  // The latest render's queueSave, so a save on leaving sees the loaded note's
+  // type and lock, not the first render's.
+  const queueSaveRef = useRef(null);
 
   const color = getColor(colorIndex);
-  const formatPayload = formatPayloadFor(type, encrypted);
   const spans = type === 'text' && encrypted !== 1 ? parseFormat(format, body.length) : [];
 
   // ── Decrypt note content ──────────────────────────────────────────────────
@@ -116,8 +128,10 @@ export default function NoteEditorScreen() {
       if (note.type === 'checklist') {
         const parsed = parseChecklistStr(plaintext);
         setItems(parsed);
+        shownRef.current = { ...shownRef.current, items: parsed };
       } else {
         setBody(plaintext);
+        shownRef.current = { ...shownRef.current, body: plaintext };
       }
       setLocked(false);
       setDecryptError('');
@@ -134,7 +148,15 @@ export default function NoteEditorScreen() {
     if (!isNew) {
       getNoteById(id).then(note => {
         if (!note || !isMounted.current) return;
-        rawNoteRef.current = note;
+        baseRef.current = note;
+        shownRef.current = {
+          title: note.title || '',
+          body: note.encrypted === 1 || note.type === 'checklist' ? '' : (note.note || ''),
+          items: note.encrypted !== 1 && note.type === 'checklist' && note.items?.length ? note.items : EMPTY_ITEMS,
+          format: note.format || '',
+          colorIndex: note.colorIndex || 0,
+          folderId: note.folderId || 0,
+        };
         currentIdRef.current = note.id;
         setNoteId(note.id);
         setTitle(note.title || '');
@@ -167,84 +189,114 @@ export default function NoteEditorScreen() {
         setLoading(false);
       });
     }
-    return () => { isMounted.current = false; clearTimeout(saveTimer.current); };
+    return () => {
+      isMounted.current = false;
+      clearTimeout(saveTimer.current);
+      // Leaving any other way than the tick still keeps what was typed.
+      if (pendingRef.current) { queueSaveRef.current?.(pendingRef.current); pendingRef.current = null; }
+    };
   }, [id]);
 
-  // ── Auto-save ─────────────────────────────────────────────────────────────
-  const scheduleSave = useCallback(async (overrides = {}) => {
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      if (!isMounted.current) return;
+  // ── Save ──────────────────────────────────────────────────────────────────
+  // What the editor holds now, as plain values.
+  const currentValues = (o = {}) => ({ title, body, items, format, colorIndex, folderId, locked, ...o });
 
-      let contentPayload;
-      if (encrypted === 1 && masterPassword && !locked) {
-        // Re-encrypt updated content
+  // The note as it should be stored, from what the editor holds. Text that
+  // wasn't edited keeps its stored value, so a locked note isn't re-encrypted
+  // and a note that was only looked at compares equal. Returns null when it
+  // can't be built (encryption failed), so nothing is written.
+  const buildEdited = async (v) => {
+    const base = baseRef.current;
+    const shown = shownRef.current;
+    const edited = { ...pick(base, CONTENT_FIELDS), colorIndex: v.colorIndex, folderId: v.folderId };
+    if (v.title !== shown.title) edited.title = v.title;
+    const isChecklist = type === 'checklist';
+    const bodyEdited = isChecklist ? !sameValue(v.items, shown.items) : v.body !== shown.body;
+    if (bodyEdited && !(encrypted === 1 && v.locked)) {
+      if (encrypted === 1) {
+        // Content uses ColorNote's fixed built-in key (see crypto.js), so this
+        // needs no password. Ciphertext is never written without its flag,
+        // and plain text is never written under it.
         try {
-          if (type === 'checklist') {
-            const serialized = serializeItems(overrides.items ?? items);
-            const ct = await encryptNoteContent(serialized);
-            contentPayload = { note: null, items: [{ text: ct, checked: false }] };
+          if (isChecklist) {
+            edited.note = null;
+            edited.items = [{ text: await encryptNoteContent(serializeItems(v.items)), checked: false }];
           } else {
-            const ct = await encryptNoteContent(overrides.note ?? body);
-            contentPayload = { note: ct, items: null };
+            edited.note = await encryptNoteContent(v.body);
+            edited.items = null;
           }
-        } catch {
-          // Encryption failed — save plaintext as fallback (should not happen)
-          contentPayload = type === 'checklist'
-            ? { note: null, items: overrides.items ?? items }
-            : { note: overrides.note ?? body, items: null };
+        } catch (e) {
+          console.error('Encrypting the note failed, not saved:', e?.name || 'Error');
+          return null;
         }
+      } else if (isChecklist) {
+        edited.note = null;
+        edited.items = v.items;
       } else {
-        contentPayload = type === 'checklist'
-          ? { note: null, items: overrides.items ?? items }
-          : { note: overrides.note ?? body, items: null };
+        edited.note = v.body;
+        edited.items = null;
       }
+    }
+    if (type === 'text' && encrypted !== 1 && v.format !== shown.format) edited.format = v.format;
+    return edited;
+  };
 
-      const payload = {
-        title: overrides.title ?? title,
-        type,
-        colorIndex: overrides.colorIndex ?? colorIndex,
-        encrypted,
-        importance,
-        calendarDate,
-        modifiedAt: Date.now(),
-        ...contentPayload,
-        ...overrides,
-        // Don't let overrides clobber the processed contentPayload
-        ...(overrides.items !== undefined || overrides.note !== undefined ? {} : contentPayload),
-      };
+  const doSave = async (v) => {
+    if (!currentIdRef.current) {
+      const hasContent = v.title.trim() || (type === 'text' ? v.body.trim() : v.items.some(i => i.text.trim()));
+      if (!hasContent) return;
+      const content = type === 'checklist' ? { note: null, items: v.items } : { note: v.body, items: null };
+      const newId = await createNote({
+        title: v.title, type, colorIndex: v.colorIndex, folderId: v.folderId, encrypted, importance, calendarDate,
+        ...content, ...formatPayloadFor(type, encrypted)(v.format),
+      });
+      currentIdRef.current = newId;
+      baseRef.current = await getNoteById(newId);
+      shownRef.current = v;
+      if (isMounted.current) { setNoteId(newId); setModifiedAt(baseRef.current?.modifiedAt || Date.now()); }
+      return;
+    }
+    const edited = await buildEdited(v);
+    if (!edited) return;
+    const savedId = await saveEdited(currentIdRef.current, baseRef.current, edited);
+    baseRef.current = { ...baseRef.current, ...edited };
+    shownRef.current = v;
+    if (savedId !== currentIdRef.current) {
+      // Deleted elsewhere while open: the text came back as a new note.
+      currentIdRef.current = savedId;
+      if (isMounted.current) setNoteId(savedId);
+    }
+    const row = await getNoteById(savedId);
+    if (row) baseRef.current = { ...baseRef.current, id: row.id, uuid: row.uuid };
+    if (row && isMounted.current) setModifiedAt(row.modifiedAt || Date.now());
+  };
 
-      // Merge properly
-      const finalPayload = {
-        title:       overrides.title      ?? title,
-        type,
-        colorIndex:  overrides.colorIndex ?? colorIndex,
-        folderId:    overrides.folderId ?? folderId,
-        encrypted,
-        importance,
-        calendarDate,
-        modifiedAt:  Date.now(),
-        ...contentPayload,
-        ...formatPayload(overrides.format ?? format),
-      };
+  const queueSave = (v) => {
+    saveChain.current = saveChain.current
+      .then(() => doSave(v))
+      .catch(e => console.error('Saving the note failed:', e?.name || 'Error'));
+    return saveChain.current;
+  };
+  queueSaveRef.current = queueSave;
 
-      if (currentIdRef.current) {
-        await updateNote(currentIdRef.current, finalPayload);
-      } else {
-        const newId = await createNote(finalPayload);
-        currentIdRef.current = newId;
-        setNoteId(newId);
-      }
-      if (isMounted.current) setModifiedAt(Date.now());
+  // ── Auto-save ─────────────────────────────────────────────────────────────
+  const scheduleSave = (overrides = {}) => {
+    clearTimeout(saveTimer.current);
+    const v = currentValues(overrides);
+    pendingRef.current = v;
+    saveTimer.current = setTimeout(() => {
+      if (pendingRef.current !== v) return;
+      pendingRef.current = null;
+      queueSave(v);
     }, AUTOSAVE_DELAY);
-  }, [title, body, items, type, colorIndex, folderId, encrypted, importance, calendarDate, format, masterPassword, locked]);
+  };
 
   // ── Field change handlers ─────────────────────────────────────────────────
   const handleTitleChange  = v  => { setTitle(v);  scheduleSave({ title: v }); };
   const handleBodyChange   = v  => {
     // The ranges follow the text, so styling never slides onto other words.
     const next = formatOf(followEdit(parseFormat(format, body.length), body, v));
-    setBody(v); setFormat(next); scheduleSave({ note: v, format: next });
+    setBody(v); setFormat(next); scheduleSave({ body: v, format: next });
   };
   const handleStyle = style => {
     const el = bodyRef.current;
@@ -275,34 +327,11 @@ export default function NoteEditorScreen() {
   };
 
   // ── Save on back ──────────────────────────────────────────────────────────
+  // Writes only what was edited here; a note that was only read stays as it is.
   const handleBack = async () => {
     clearTimeout(saveTimer.current);
-
-    let contentPayload;
-    if (encrypted === 1 && masterPassword && !locked) {
-      try {
-        if (type === 'checklist') {
-          const ct = await encryptNoteContent(serializeItems(items));
-          contentPayload = { note: null, items: [{ text: ct, checked: false }] };
-        } else {
-          const ct = await encryptNoteContent(body);
-          contentPayload = { note: ct, items: null };
-        }
-      } catch {
-        contentPayload = type === 'checklist' ? { note: null, items } : { note: body, items: null };
-      }
-    } else {
-      contentPayload = type === 'checklist' ? { note: null, items } : { note: body, items: null };
-    }
-
-    const payload = { title, type, colorIndex, folderId, encrypted, importance, calendarDate, modifiedAt: Date.now(), ...contentPayload, ...formatPayload(format) };
-
-    if (currentIdRef.current) {
-      await updateNote(currentIdRef.current, payload);
-    } else {
-      const hasContent = title.trim() || (type === 'text' ? body.trim() : items.some(i => i.text.trim()));
-      if (hasContent) await createNote(payload);
-    }
+    pendingRef.current = null;
+    await queueSave(currentValues());
     navigate(-1);
   };
 
@@ -326,11 +355,15 @@ export default function NoteEditorScreen() {
   const handlePasswordSuccess = (password) => {
     setMasterPassword(password);
     setPwDialogOpen(false);
-    if (rawNoteRef.current) decryptAndShow(rawNoteRef.current);
+    // The note as last saved here, not as first opened.
+    if (baseRef.current) decryptAndShow(baseRef.current);
   };
 
   // ── Lock session ─────────────────────────────────────────────────────────
   const handleLockSession = () => {
+    // Save what was typed before the text is hidden.
+    clearTimeout(saveTimer.current);
+    if (pendingRef.current) { queueSave(pendingRef.current); pendingRef.current = null; }
     setMasterPassword(null);
     setLocked(true);
     setBody('');
@@ -538,7 +571,7 @@ export default function NoteEditorScreen() {
           </MenuItem>
         )}
         {currentIdRef.current && (
-          <MenuItem onClick={() => { setMenuAnchor(null); togglePin(currentIdRef.current); }}>
+          <MenuItem onClick={() => { setMenuAnchor(null); togglePin(currentIdRef.current); setImportance(i => (i ? 0 : 1)); }}>
             <PushPinIcon sx={{ mr: 1.5, fontSize: 20 }} /> {importance ? 'Unpin' : 'Pin'}
           </MenuItem>
         )}

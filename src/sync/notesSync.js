@@ -19,36 +19,29 @@
 //    the uuids it has already synced with this account; one of those that is
 //    missing from the cloud was deleted elsewhere and is removed here, instead
 //    of being re-uploaded. Notes this browser never synced are still pushed.
+//
+// Pushes send only the fields that changed (updateDoc), like the phone does, so
+// a field changed elsewhere since this browser last heard of the note (a pin, a
+// dismissed reminder, a field this app doesn't know) is never overwritten. Only
+// a new note sends the whole doc, with merge.
 
 import {
-  collection, doc, setDoc, deleteDoc, getDoc, getDocs, onSnapshot, writeBatch,
+  collection, doc, setDoc, updateDoc, deleteDoc, getDoc, getDocs, onSnapshot, writeBatch,
 } from 'firebase/firestore';
 import { db as firestoreDb } from '../firebase';
 import { db, setSetting } from '../db/database';
+import { BUMP_FIELDS, CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
 
 let unsubscribeNotes = null;
 let currentUid = null;
 
-// Fields compared when the two copies have the same `modifiedAt`.
+// Fields compared when the two copies have the same `modifiedAt`. The reminder
+// fields are here because the phone changes them without bumping `modifiedAt`.
 const SYNCED_FIELDS = [
   'title', 'note', 'items', 'type', 'colorIndex', 'state', 'encrypted', 'folderId',
   'importance', 'calendarDate', 'reminderType', 'reminderRepeat', 'tags', 'format',
+  'reminderTime', 'reminderRepeatEnds', 'reminderDismissedAt',
 ];
-
-function normalise(v) {
-  if (v === undefined || v === '') return null;
-  if (v === true) return 1;
-  if (v === false) return 0;
-  if (Array.isArray(v)) return v.map(normalise);
-  if (v && typeof v === 'object') {
-    return Object.fromEntries(Object.keys(v).sort().map(k => [k, normalise(v[k])]));
-  }
-  return v;
-}
-
-function sameValue(a, b) {
-  return JSON.stringify(normalise(a)) === JSON.stringify(normalise(b));
-}
 
 // True when the cloud copy differs in a field the cloud actually has.
 function contentDiffers(local, cloud) {
@@ -87,11 +80,27 @@ function toCloudDoc(note) {
 }
 
 // ─── Notes: push (local → cloud) ───────────────────────────────────────────
-export async function pushNote(note) {
+// `fields` names what changed; only those are sent. Without it (a new note, a
+// copy) the whole note is sent, merged into whatever the cloud has.
+export async function pushNote(note, fields) {
   if (!currentUid || !note?.uuid) return;
+  if (fields && !fields.length) return;
   const uid = currentUid;
+  const ref = doc(firestoreDb, 'users', uid, 'notes', note.uuid);
   try {
-    await setDoc(doc(firestoreDb, 'users', uid, 'notes', note.uuid), toCloudDoc(note));
+    if (!fields) {
+      await setDoc(ref, toCloudDoc(note), { merge: true });
+    } else {
+      try {
+        await updateDoc(ref, pick(note, fields));
+      } catch (e) {
+        if (e?.code !== 'not-found') throw e;
+        // Deleted elsewhere meanwhile. Text edited here is the only copy left,
+        // so the note comes back; a pin or a move on its own doesn't.
+        if (!fields.some(f => CONTENT_FIELDS.includes(f))) return;
+        await setDoc(ref, toCloudDoc(note), { merge: true });
+      }
+    }
     markSynced(uid, note.uuid);
   } catch (e) {
     // Firestore's own offline queue retries automatically once back online.
@@ -147,6 +156,7 @@ async function performInitialReconciliation(uid) {
 
   // Firestore batches cap at 500 writes — chunk in case a first sync ever
   // needs to push more than that in one go.
+  // [note, fields]: fields null sends the whole note (the cloud doesn't have it).
   const toPush = [];
   for (const local of localNotes) {
     const remote = remoteByUuid.get(local.uuid);
@@ -154,12 +164,24 @@ async function performInitialReconciliation(uid) {
       // Synced before, gone from the cloud now: deleted on another device.
       await removeLocalNoteByUuid(local.uuid);
       synced.delete(local.uuid);
-    } else if (!remote || (local.modifiedAt || 0) > (remote.modifiedAt || 0)) {
-      toPush.push(local);
+    } else if (!remote) {
+      toPush.push([local, null]);
+    } else if ((local.modifiedAt || 0) > (remote.modifiedAt || 0)
+      && BUMP_FIELDS.some(f => f in local && !sameValue(local[f], remote[f]))) {
+      // An edit made here that the cloud never got. Only content, colour and
+      // folder bump modifiedAt, so only those are sent; state, pin, calendar
+      // date and reminders are taken from the cloud, where the phone changes
+      // them without a new date. A newer date with nothing different to send
+      // is left to the branch below, which takes the cloud copy.
+      const fields = [...BUMP_FIELDS.filter(f => f in local && !sameValue(local[f], remote[f])), 'modifiedAt'];
+      toPush.push([local, fields]);
+      const theirs = Object.fromEntries(Object.entries(remote).filter(([k]) => !fields.includes(k)));
+      await db.notes.update(local.id, theirs);
     } else {
-      // Cloud is the same age or newer (the live listener would catch this
-      // too, but doing it here keeps startup deterministic).
-      if ((remote.modifiedAt || 0) > (local.modifiedAt || 0) || contentDiffers(local, remote)) {
+      // Cloud is the same age or newer, or holds the same content under an
+      // older date (the live listener would catch most of this too, but
+      // doing it here keeps startup deterministic).
+      if ((remote.modifiedAt || 0) !== (local.modifiedAt || 0) || contentDiffers(local, remote)) {
         await db.notes.update(local.id, remote);
       }
       synced.add(local.uuid);
@@ -168,11 +190,12 @@ async function performInitialReconciliation(uid) {
   }
   for (let i = 0; i < toPush.length; i += 450) {
     const batch = writeBatch(firestoreDb);
-    for (const local of toPush.slice(i, i + 450)) {
-      batch.set(doc(firestoreDb, 'users', uid, 'notes', local.uuid), toCloudDoc(local));
+    for (const [local, fields] of toPush.slice(i, i + 450)) {
+      const ref = doc(firestoreDb, 'users', uid, 'notes', local.uuid);
+      batch.set(ref, fields ? pick(local, fields) : toCloudDoc(local), { merge: true });
     }
     await batch.commit();
-    for (const local of toPush.slice(i, i + 450)) synced.add(local.uuid);
+    for (const [local] of toPush.slice(i, i + 450)) synced.add(local.uuid);
   }
 
   // Whatever's left exists in the cloud but not on this device — pull it down.

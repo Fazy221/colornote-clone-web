@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { db, getNotesByState, searchNotes, getSetting } from '../db/database';
 import { formatCalendarDate } from '../utils/dateUtils';
 import { pushNote, pushNoteDeletion, syncSetting } from '../sync/notesSync';
+import { BUMP_FIELDS, planEditorSave, sameValue } from '../utils/noteFields';
 
 const useNoteStore = create((set, get) => ({
   notes: [],
@@ -48,13 +49,50 @@ const useNoteStore = create((set, get) => ({
     return id;
   },
 
+  // Writes only the fields that differ from what is stored, and bumps
+  // modifiedAt only when content, colour or folder changed. Nothing different,
+  // nothing written.
   updateNote: async (id, changes) => {
-    await db.notes.update(id, {
-      ...changes,
-      modifiedAt: Date.now(),
-    });
+    const current = await db.notes.get(id);
+    if (!current) return;
+    const fields = Object.keys(changes).filter(f => f !== 'modifiedAt' && !sameValue(changes[f], current[f]));
+    if (!fields.length) return;
+    const patch = Object.fromEntries(fields.map(f => [f, changes[f]]));
+    if (fields.some(f => BUMP_FIELDS.includes(f))) {
+      patch.modifiedAt = Math.max(Date.now(), (current.modifiedAt || 0) + 1);
+    }
+    await db.notes.update(id, patch);
     await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id));
+    pushNote(await db.notes.get(id), Object.keys(patch));
+  },
+
+  // Saves what the note editor holds (see planEditorSave). Returns the note's
+  // id, which is new if the note was deleted elsewhere while it was open.
+  saveEdited: async (id, base, edited) => {
+    let copy = null;
+    let fields = null;
+    let savedId = id;
+    await db.transaction('rw', db.notes, async () => {
+      const current = await db.notes.get(id);
+      const plan = planEditorSave({
+        base, edited, current: current || null, now: Date.now(), newUuid: () => crypto.randomUUID(),
+      });
+      if (plan.revive) {
+        savedId = await db.notes.add(plan.revive);
+        fields = null;
+      } else if (plan.changes) {
+        if (plan.conflictCopy) copy = { ...plan.conflictCopy, id: await db.notes.add(plan.conflictCopy) };
+        await db.notes.update(id, plan.changes);
+        fields = Object.keys(plan.changes);
+      } else {
+        savedId = null;
+      }
+    });
+    if (savedId === null) return id;
+    await get().loadNotes(get().activeState);
+    if (copy) pushNote(copy);
+    pushNote(await db.notes.get(savedId), fields ?? undefined);
+    return savedId;
   },
 
   // Move to trash — organizational, not a content edit, so modifiedAt is
@@ -63,21 +101,21 @@ const useNoteStore = create((set, get) => ({
   trashNote: async (id) => {
     await db.notes.update(id, { state: 'trash' });
     await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id));
+    pushNote(await db.notes.get(id), ['state']);
   },
 
   // Archive — same reasoning as trashNote.
   archiveNote: async (id) => {
     await db.notes.update(id, { state: 'archived' });
     await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id));
+    pushNote(await db.notes.get(id), ['state']);
   },
 
   // Restore from trash/archive → normal — same reasoning as trashNote.
   restoreNote: async (id) => {
     await db.notes.update(id, { state: 'normal' });
     await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id));
+    pushNote(await db.notes.get(id), ['state']);
   },
 
   // Permanently delete
@@ -106,7 +144,7 @@ const useNoteStore = create((set, get) => ({
     if (!note) return;
     await db.notes.update(id, { importance: note.importance ? 0 : 1 });
     await get().loadNotes(get().activeState);
-    pushNote(await db.notes.get(id));
+    pushNote(await db.notes.get(id), ['importance']);
   },
 
   // ─── Bulk ops (multi-select action bar) ────────────────────────────────────
@@ -127,37 +165,43 @@ const useNoteStore = create((set, get) => ({
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ state: 'archived' });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(n => pushNote(n, ['state']));
   },
 
   trashNotes: async (ids) => {
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ state: 'trash' });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(n => pushNote(n, ['state']));
   },
 
   setColorForNotes: async (ids, colorIndex) => {
     if (!ids.length) return;
-    await db.notes.where('id').anyOf(ids).modify({ colorIndex, modifiedAt: Date.now() });
+    // Notes already that colour keep their date.
+    const changed = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => n.colorIndex !== colorIndex).map(n => n.id);
+    if (!changed.length) return;
+    await db.notes.where('id').anyOf(changed).modify({ colorIndex, modifiedAt: Date.now() });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
+    (await db.notes.where('id').anyOf(changed).toArray()).forEach(n => pushNote(n, ['colorIndex', 'modifiedAt']));
   },
 
   setPinForNotes: async (ids, pinned) => {
     if (!ids.length) return;
     await db.notes.where('id').anyOf(ids).modify({ importance: pinned ? 1 : 0 });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
+    (await db.notes.where('id').anyOf(ids).toArray()).forEach(n => pushNote(n, ['importance']));
   },
 
   // Folder changes bump modifiedAt, like on the phone, so the other side
   // takes the newer copy.
   setFolderForNotes: async (ids, folderId) => {
     if (!ids.length) return;
-    await db.notes.where('id').anyOf(ids).modify({ folderId, modifiedAt: Date.now() });
+    // Notes already in that folder keep their date.
+    const changed = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => (n.folderId || 0) !== folderId).map(n => n.id);
+    if (!changed.length) return;
+    await db.notes.where('id').anyOf(changed).modify({ folderId, modifiedAt: Date.now() });
     await get().loadNotes(get().activeState);
-    (await db.notes.where('id').anyOf(ids).toArray()).forEach(pushNote);
+    (await db.notes.where('id').anyOf(changed).toArray()).forEach(n => pushNote(n, ['folderId', 'modifiedAt']));
   },
 
   // Deleting a folder keeps its notes; they just belong to no folder any more.
@@ -245,10 +289,10 @@ const useNoteStore = create((set, get) => ({
     // calendarDate patches on notes that were already synced.
     if (mapped.length) {
       const addedUuids = mapped.map(n => n.uuid);
-      (await db.notes.where('uuid').anyOf(addedUuids).toArray()).forEach(pushNote);
+      (await db.notes.where('uuid').anyOf(addedUuids).toArray()).forEach(n => pushNote(n));
     }
     if (toPatch.length) {
-      (await db.notes.where('id').anyOf(toPatch.map(p => p.id)).toArray()).forEach(pushNote);
+      (await db.notes.where('id').anyOf(toPatch.map(p => p.id)).toArray()).forEach(n => pushNote(n, ['calendarDate']));
     }
 
     return {
