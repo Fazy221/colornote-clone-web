@@ -3,7 +3,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-vi.mock('../../db/database', () => ({ db: { notes: { filter: () => ({ toArray: async () => [] }) } } }));
+vi.mock('../../db/database', () => ({
+  db: { notes: { filter: () => ({ toArray: async () => [] }) } },
+  hiddenPrefs: async () => ({ showHidden: false, searchHidden: false }),
+  isHidden: (n) => !!n?.hidden,
+}));
 vi.mock('../../components/layout/BottomNav', () => ({ default: () => null }));
 
 import CalendarScreen from '../CalendarScreen';

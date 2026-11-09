@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import useUIStore from './uiStore';
-import { db, getNotesByState, searchNotes, getSetting } from '../db/database';
+import { db, getNotesByState, searchNotes, getSetting, hiddenPrefs } from '../db/database';
 import { pushNote, pushNoteDeletion, pushVersions, syncSetting } from '../sync/notesSync';
 import { deleteVersionsFor, recordVersion } from '../db/versionLog';
 import { restorePatch } from '../utils/versions';
@@ -35,7 +35,8 @@ const useNoteStore = create((set, get) => ({
   loadNotes: async (state = 'normal') => {
     set({ loading: true, activeState: state });
     try {
-      const notes = await getNotesByState(state);
+      const { showHidden } = await hiddenPrefs();
+      const notes = await getNotesByState(state, { includeHidden: showHidden });
       set({ notes, loading: false });
     } catch (e) {
       console.error('loadNotes error:', e);
@@ -58,6 +59,7 @@ const useNoteStore = create((set, get) => ({
       encrypted: 0,
       folderId: 0,
       importance: 0,
+      hidden: 0,
       calendarDate: null,
       reminderType: 0,
       reminderRepeat: 0,
@@ -219,6 +221,22 @@ const useNoteStore = create((set, get) => ({
     pushNote(await db.notes.get(id), ['importance']);
   },
 
+  // Hide / unhide — organizational like pinning, so modifiedAt is left alone. `hidden` is always sent as
+  // 0 or 1 (never left out) so that unhiding reaches the phone as a change. Returns how many notes changed.
+  setHiddenForNotes: async (ids, hidden) => {
+    if (!ids.length) return 0;
+    const want = hidden ? 1 : 0;
+    const changed = (await db.notes.where('id').anyOf(ids).toArray()).filter(n => (n.hidden ? 1 : 0) !== want).map(n => n.id);
+    if (!changed.length) return 0;
+    await db.notes.where('id').anyOf(changed).modify({ hidden: want });
+    await get().loadNotes(get().activeState);
+    (await db.notes.where('id').anyOf(changed).toArray()).forEach(n => pushNote(n, ['hidden']));
+    toast(hidden ? (changed.length > 1 ? 'Notes hidden' : 'Note hidden') : (changed.length > 1 ? 'Notes unhidden' : 'Note unhidden'));
+    return changed.length;
+  },
+
+  setHidden: async (id, hidden) => get().setHiddenForNotes([id], hidden),
+
   // ─── Bulk ops (multi-select action bar) ────────────────────────────────────
   // NOTE: this project pins dexie@^3.2.7, which predates Table.bulkUpdate()
   // (added in Dexie 4). where().anyOf().modify() is the 3.x-compatible way
@@ -374,7 +392,8 @@ const useNoteStore = create((set, get) => ({
   // ─── Search ───────────────────────────────────────────────────────────────
   searchNotes: async (query) => {
     const includeLockedContent = await getSetting('searchLockedContent', false);
-    return searchNotes(query, { includeLockedContent });
+    const { searchHidden } = await hiddenPrefs();
+    return searchNotes(query, { includeLockedContent, includeHidden: searchHidden });
   },
 }));
 

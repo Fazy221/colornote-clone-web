@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getSetting, setSetting, getFolderCounts } from '../db/database';
+import { getSetting, setSetting, getFolderCounts, hiddenPrefs } from '../db/database';
 import { syncSetting, pullSetting } from '../sync/notesSync';
 import useNoteStore from './noteStore';
 import { parseFolders, nextFolderId, FOLDER_SORTS } from '../utils/folders';
@@ -19,7 +19,7 @@ const useFolderStore = create((set, get) => ({
     set({ folders: parseFolders(saved), sort: FOLDER_SORTS[sort] ? sort : 'color', loaded: true });
   },
 
-  loadCounts: async () => set({ counts: await getFolderCounts() }),
+  loadCounts: async () => set({ counts: await getFolderCounts({ includeHidden: (await hiddenPrefs()).showHidden }) }),
 
   setSort: async (sort) => {
     set({ sort });

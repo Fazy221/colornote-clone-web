@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Box, AppBar, Toolbar, IconButton, Typography, CircularProgress } from '@mui/material';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import NoteCard from '../components/notes/NoteCard';
-import { getNotesInFolder } from '../db/database';
+import { getNotesInFolder, hiddenPrefs } from '../db/database';
 import useFolderStore from '../store/folderStore';
 
 // The notes in one folder (archived ones included, trash not), opened from the Folders tab.
@@ -15,7 +15,7 @@ export default function FolderNotesScreen() {
 
   useEffect(() => {
     useFolderStore.getState().load();
-    getNotesInFolder(folderId).then(setNotes);
+    hiddenPrefs().then(({ showHidden }) => getNotesInFolder(folderId, { includeHidden: showHidden })).then(setNotes);
   }, [folderId]);
 
   return (

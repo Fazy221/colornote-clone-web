@@ -17,6 +17,8 @@ import ColorLensIcon from '@mui/icons-material/ColorLens';
 import PushPinIcon from '@mui/icons-material/PushPin';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import ArchiveIcon from '@mui/icons-material/Archive';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import DeleteIcon from '@mui/icons-material/Delete';
 import ViewListIcon from '@mui/icons-material/ViewList';
 import GridViewIcon from '@mui/icons-material/GridView';
@@ -47,6 +49,7 @@ export default function HomeScreen() {
   const {
     notes, loading, loadNotes, activeState,
     archiveNotes, trashNotes, setColorForNotes, setPinForNotes, setFolderForNotes, liveReminderIds,
+    setHiddenForNotes,
   } = useNoteStore();
   // { ids, live } while asking whether to end the reminders of the notes being archived.
   const [archiveAsk, setArchiveAsk] = useState(null);
@@ -167,6 +170,7 @@ export default function HomeScreen() {
     [displayNotes, selectedIds]
   );
   const allSelectedPinned = selectedNotes.length > 0 && selectedNotes.every(n => n.importance === 1);
+  const allSelectedHidden = selectedNotes.length > 0 && selectedNotes.every(n => n.hidden);
   const allFilteredSelected = displayNotes.length > 0 && selectedIds.size === displayNotes.length;
 
   const handleAdd = (type) => {
@@ -200,6 +204,11 @@ export default function HomeScreen() {
 
   const handleBulkPin = () => {
     setPinForNotes([...selectedIds], !allSelectedPinned);
+    clearSelection();
+  };
+
+  const handleBulkHide = () => {
+    setHiddenForNotes([...selectedIds], !allSelectedHidden);
     clearSelection();
   };
 
@@ -266,7 +275,19 @@ export default function HomeScreen() {
         ) : (
           <Toolbar sx={{ minHeight: 56, px: 2 }}>
             {/* Logo */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1 }}>
+            {/* Opens the Hidden notes page, as on the phone. */}
+            <Box
+              component="button"
+              type="button"
+              onClick={() => navigate('/hidden')}
+              aria-label="Hidden notes"
+              data-testid="logo-hidden"
+              sx={{
+                display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0,
+                background: 'none', border: 0, p: 0, m: 0, font: 'inherit', color: 'inherit',
+                textAlign: 'left', cursor: 'pointer', alignSelf: 'stretch',
+              }}
+            >
               <Box sx={{
                 width: 28, height: 28, borderRadius: '4px',
                 background: 'linear-gradient(135deg, #F44336 25%, #FFEB3B 25% 50%, #4CAF50 50% 75%, #2196F3 75%)',
@@ -463,6 +484,13 @@ export default function HomeScreen() {
           >
             {allSelectedPinned ? <PushPinIcon sx={{ fontSize: 22 }} /> : <PushPinOutlinedIcon sx={{ fontSize: 22 }} />}
             <Typography variant="caption" sx={{ fontSize: '0.65rem' }}>{allSelectedPinned ? 'Unpin' : 'Pin'}</Typography>
+          </IconButton>
+          <IconButton
+            onClick={handleBulkHide}
+            sx={{ flex: 1, borderRadius: 0, py: 1, flexDirection: 'column', gap: 0.25 }}
+          >
+            {allSelectedHidden ? <VisibilityIcon sx={{ fontSize: 22 }} /> : <VisibilityOffIcon sx={{ fontSize: 22 }} />}
+            <Typography variant="caption" sx={{ fontSize: '0.65rem' }}>{allSelectedHidden ? 'Unhide' : 'Hide'}</Typography>
           </IconButton>
           <IconButton
             onClick={handleBulkArchive}

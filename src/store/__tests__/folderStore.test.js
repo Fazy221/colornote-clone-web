@@ -7,6 +7,7 @@ vi.mock('../../db/database', () => ({
   getSetting: async (key, def = null) => (key in h.local ? h.local[key] : def),
   setSetting: async (key, value) => { h.local[key] = value; },
   getFolderCounts: async () => ({ 1000: 2 }),
+  hiddenPrefs: async () => ({ showHidden: false, searchHidden: false }),
 }));
 vi.mock('../../sync/notesSync', () => ({
   syncSetting: async (key, value) => { h.local[key] = value; h.cloud[key] = value; h.pushed.push(key); },

@@ -11,14 +11,17 @@ import ViewListIcon from '@mui/icons-material/ViewList';
 import ViewModuleIcon from '@mui/icons-material/ViewModule';
 import ViewComfyIcon from '@mui/icons-material/ViewComfy';
 import ViewCompactIcon from '@mui/icons-material/ViewCompact';
-import { getSetting } from '../db/database';
+import { getSetting, hiddenPrefs } from '../db/database';
 import { syncSetting } from '../sync/notesSync';
 import useUIStore from '../store/uiStore';
+import useNoteStore from '../store/noteStore';
 import useAuthStore from '../store/authStore';
 
 export default function SettingsScreen() {
   const navigate = useNavigate();
   const [searchLockedContent, setSearchLockedContent] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
+  const [searchHidden, setSearchHidden] = useState(false);
   const [defaultDesktopView, setDefaultDesktopView] = useState(1);
   const [loaded, setLoaded] = useState(false);
 
@@ -32,10 +35,26 @@ export default function SettingsScreen() {
   useEffect(() => {
     (async () => {
       setSearchLockedContent(await getSetting('searchLockedContent', false));
+      const prefs = await hiddenPrefs();
+      setShowHidden(prefs.showHidden);
+      setSearchHidden(prefs.searchHidden);
       setDefaultDesktopView(Number(await getSetting('defaultDesktopView', 1)));
       setLoaded(true);
     })();
   }, []);
+
+  // Home keeps its list while you stay on the same tab, so a change here reloads it.
+  const handleShowHidden = async (checked) => {
+    setShowHidden(checked);
+    await syncSetting('showHiddenNotes', checked);
+    const { loadNotes, activeState } = useNoteStore.getState();
+    loadNotes(activeState);
+  };
+
+  const handleSearchHidden = async (checked) => {
+    setSearchHidden(checked);
+    await syncSetting('searchHiddenNotes', checked);
+  };
 
   const handleSearchLocked = async (checked) => {
     setSearchLockedContent(checked);
@@ -171,6 +190,36 @@ export default function SettingsScreen() {
               checked={searchLockedContent}
               disabled={!loaded}
               onChange={e => handleSearchLocked(e.target.checked)}
+            />
+          </ListItem>
+          <Divider component="li" />
+
+          <ListItem sx={{ py: 1.5 }}>
+            <ListItemText
+              primary="Show hidden notes"
+              secondary="When on, hidden notes show with the rest on Home, the calendar and in folders. When off, they show only on the Hidden page (click the ColorNote logo on Home)."
+              secondaryTypographyProps={{ sx: { mt: 0.5 } }}
+            />
+            <Switch
+              checked={showHidden}
+              disabled={!loaded}
+              onChange={e => handleShowHidden(e.target.checked)}
+              inputProps={{ 'aria-label': 'Show hidden notes' }}
+            />
+          </ListItem>
+          <Divider component="li" />
+
+          <ListItem sx={{ py: 1.5 }}>
+            <ListItemText
+              primary="Search hidden notes"
+              secondary="When on, Search also looks through hidden notes. When off, it never finds them."
+              secondaryTypographyProps={{ sx: { mt: 0.5 } }}
+            />
+            <Switch
+              checked={searchHidden}
+              disabled={!loaded}
+              onChange={e => handleSearchHidden(e.target.checked)}
+              inputProps={{ 'aria-label': 'Search hidden notes' }}
             />
           </ListItem>
           <Divider component="li" />

@@ -9,6 +9,7 @@ vi.mock('../../db/database', () => ({
   getSetting: async (key, def = null) => (key === 'folders' && h.cloud ? h.cloud : def),
   setSetting: async () => {},
   getFolderCounts: async () => ({ 1000: 3, 1001: 1 }),
+  hiddenPrefs: async () => ({ showHidden: false, searchHidden: false }),
 }));
 vi.mock('../../sync/notesSync', () => ({
   syncSetting: async () => {},

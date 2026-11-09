@@ -39,38 +39,61 @@ db.version(4).stores({
   versions: 'id, noteUuid, [noteUuid+at], synced',
 });
 
+// A hidden note (the `hidden` field, 0 or 1 like the phone's; a note that never had it is not hidden).
+// Hidden notes stay out of every list, the calendar and Search, unless the "Show hidden notes" setting
+// is on (lists, calendar) or "Search hidden notes" is (Search). They are always reachable from the
+// Hidden page, which the logo on Home opens. The phone does the same (NoteSummary.hidden).
+export const isHidden = (n) => !!n?.hidden;
+
+// Reads the two settings the lists need, both off until turned on.
+// (The phone may have stored the switch as the text "true", so both count.)
+const isOn = (v) => v === true || v === 'true';
+export async function hiddenPrefs() {
+  return {
+    showHidden: isOn(await getSetting('showHiddenNotes', false)),
+    searchHidden: isOn(await getSetting('searchHiddenNotes', false)),
+  };
+}
+
 // Helper: get all notes in a state, sorted by modifiedAt desc
-export async function getNotesByState(state = 'normal') {
-  return db.notes
+export async function getNotesByState(state = 'normal', { includeHidden = false } = {}) {
+  const notes = await db.notes
     .where('state').equals(state)
     .reverse()
     .sortBy('modifiedAt');
+  return includeHidden ? notes : notes.filter(n => !isHidden(n));
+}
+
+// Helper: the hidden notes (not the trashed ones), pinned first then newest, for the Hidden page.
+export async function getHiddenNotes() {
+  const notes = (await db.notes.toArray()).filter(n => isHidden(n) && n.state !== 'trash');
+  return notes.sort((a, b) => ((b.importance === 1) - (a.importance === 1)) || ((b.modifiedAt || 0) - (a.modifiedAt || 0)));
 }
 
 // Helper: notes that belong to a folder (anything but the trash), pinned first then newest.
-export async function getNotesInFolder(folderId) {
+export async function getNotesInFolder(folderId, { includeHidden = false } = {}) {
   const notes = await db.notes.where('folderId').equals(folderId).toArray();
   return notes
-    .filter(n => n.state !== 'trash')
+    .filter(n => n.state !== 'trash' && (includeHidden || !isHidden(n)))
     .sort((a, b) => ((b.importance === 1) - (a.importance === 1)) || ((b.modifiedAt || 0) - (a.modifiedAt || 0)));
 }
 
 // Helper: how many notes each folder holds (trash and the real app's system folder excluded).
-export async function getFolderCounts() {
+export async function getFolderCounts({ includeHidden = false } = {}) {
   const counts = {};
   await db.notes.where('folderId').above(0).each(n => {
-    if (n.state === 'trash' || n.folderId === 256) return;
+    if (n.state === 'trash' || n.folderId === 256 || (!includeHidden && isHidden(n))) return;
     counts[n.folderId] = (counts[n.folderId] || 0) + 1;
   });
   return counts;
 }
 
 // Helper: get notes for a specific calendar date (excludes trashed/archived)
-export async function getNotesByDate(dateStr) {
+export async function getNotesByDate(dateStr, { includeHidden = false } = {}) {
   const notes = await db.notes
     .where('calendarDate').equals(dateStr)
     .toArray();
-  return notes.filter(n => n.state === 'normal');
+  return notes.filter(n => n.state === 'normal' && (includeHidden || !isHidden(n)));
 }
 
 // Helper: full-text search across title + note.
@@ -85,7 +108,8 @@ export async function searchNotes(query, options = {}) {
   const q = query.toLowerCase();
   const includeLockedContent = !!options.includeLockedContent;
 
-  const notes = await db.notes.where('state').equals('normal').toArray();
+  const includeHidden = !!options.includeHidden;
+  const notes = (await db.notes.where('state').equals('normal').toArray()).filter(n => includeHidden || !isHidden(n));
 
   const results = await Promise.all(notes.map(async (n) => {
     if ((n.title || '').toLowerCase().includes(q)) return n;

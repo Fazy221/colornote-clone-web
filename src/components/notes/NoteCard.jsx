@@ -3,7 +3,6 @@ import { Box, Typography, useTheme } from '@mui/material';
 import LockIcon from '@mui/icons-material/Lock';
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import EventIcon from '@mui/icons-material/Event';
-import CheckIcon from '@mui/icons-material/Check';
 import { getColor } from '../../utils/colors';
 import { formatNoteDate } from '../../utils/dateUtils';
 
@@ -116,7 +115,8 @@ export default function NoteCard({ note, selected, onPress, onLongPress }) {
         cursor: 'pointer',
         position: 'relative',
         borderLeft: dark ? `4px solid ${color.border}` : 'none',
-        outline: selected ? `2px solid ${color.border}` : 'none',
+        // Selected: the phone's look (NoteList.kt), a grey wash and a grey edge whatever the note's colour.
+        outline: selected ? `2px solid ${dark ? '#666666' : '#333333'}` : 'none',
         outlineOffset: '-2px',
         userSelect: 'none',
         WebkitUserSelect: 'none',
@@ -126,16 +126,15 @@ export default function NoteCard({ note, selected, onPress, onLongPress }) {
         '&:active': { filter: 'brightness(0.95)' },
       }}
     >
-      {/* Selection overlay */}
+      {/* Selection overlay: a grey wash over the whole row, as on the phone. */}
       {selected && (
-        <Box sx={{
-          position: 'absolute', top: 8, right: 8,
-          width: 22, height: 22, borderRadius: '50%',
-          bgcolor: color.border, display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
-        }}>
-          <CheckIcon sx={{ fontSize: 14, color: '#fff' }} />
-        </Box>
+        <Box
+          data-testid="selected-overlay"
+          sx={{
+            position: 'absolute', inset: 0, borderRadius: '4px', pointerEvents: 'none',
+            bgcolor: dark ? 'rgba(136,136,136,0.4)' : 'rgba(51,51,51,0.4)',
+          }}
+        />
       )}
 
       {/* Top row: title + date */}

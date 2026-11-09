@@ -18,6 +18,7 @@ import { ArchiveScreen, TrashScreen } from './screens/ArchiveTrashScreen';
 import ImportScreen from './screens/ImportScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import ConflictsScreen from './screens/ConflictsScreen';
+import HiddenScreen from './screens/HiddenScreen';
 import PageFrame from './components/layout/PageFrame';
 import GlobalShortcuts from './components/common/GlobalShortcuts';
 
@@ -132,6 +133,7 @@ export default function App() {
           <Route path="/import"     element={<ImportScreen />} />
           <Route path="/settings"   element={<SettingsScreen />} />
           <Route path="/conflicts"  element={<ConflictsScreen />} />
+          <Route path="/hidden"     element={<HiddenScreen />} />
         </Routes>
         {/* Inside the page column, so with the fixed width the toast sits inside its left edge (PageFrame explains why). */}
         <Snackbar

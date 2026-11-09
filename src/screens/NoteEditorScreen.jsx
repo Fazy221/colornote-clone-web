@@ -17,6 +17,8 @@ import ColorLensIcon   from '@mui/icons-material/ColorLens';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import FileCopyOutlinedIcon from '@mui/icons-material/FileCopyOutlined';
 import PushPinIcon     from '@mui/icons-material/PushPin';
+import VisibilityIcon    from '@mui/icons-material/Visibility';
+import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import LockIcon        from '@mui/icons-material/Lock';
 import LockOpenIcon    from '@mui/icons-material/LockOpen';
 import SearchIcon      from '@mui/icons-material/Search';
@@ -41,34 +43,17 @@ import { is, hasOpenOverlay, shortcutDone } from '../utils/shortcuts';
 import { decryptNoteContent, encryptNoteContent, getNoteCiphertext } from '../utils/crypto';
 import { CONTENT_FIELDS, pick, sameValue } from '../utils/noteFields';
 import { ARCHIVE_QUESTION } from '../utils/reminders';
+import {
+  serializeItems, parseChecklistStr, cleanItems, insertAfter, addChild, addParentAtEnd, removeRow, levelOf,
+} from '../utils/checklist';
 import useNoteStore from '../store/noteStore';
 import useUIStore   from '../store/uiStore';
-
-// Serialize checklist items → "[ ] text\n[V] text\n..." for encryption
-function serializeItems(items) {
-  return (items || []).map(i => `${i.checked ? '[V]' : '[ ]'} ${i.text}`).join('\n');
-}
-
-// Parse decrypted checklist string back to items array
-function parseChecklistStr(str) {
-  if (!str) return [{ text: '', checked: false }];
-  const lines = str.split('\n').filter(l => l.trim());
-  if (!lines.length) return [{ text: '', checked: false }];
-  return lines.map(line => {
-    if (line.startsWith('[V] ')) return { text: line.slice(4), checked: true };
-    if (line.startsWith('[ ] ')) return { text: line.slice(4), checked: false };
-    return { text: line, checked: false };
-  });
-}
 
 // Only a text note carries styling. A locked note keeps its ranges too, in plain text, as on the phone
 // (they show only where styled text sits).
 const formatPayloadFor = (type) => (fmt) => (type === 'text' ? { format: fmt } : {});
 
 const EMPTY_ITEMS = [{ text: '', checked: false }];
-
-// A checklist row with nothing in it is never stored.
-const cleanItems = (list) => (list || []).filter(i => i.text.trim());
 
 export default function NoteEditorScreen() {
   const navigate      = useNavigate();
@@ -78,7 +63,7 @@ export default function NoteEditorScreen() {
   const initialType   = searchParams.get('type') || 'text';
   const initialDate   = searchParams.get('date')  || null;
 
-  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin, liveReminderIds, setModifiedDate } = useNoteStore();
+  const { getNoteById, createNote, saveEdited, trashNote, archiveNote, duplicateNote, togglePin, liveReminderIds, setModifiedDate, setHidden: setHiddenInStore } = useNoteStore();
   const [archiveAskOpen, setArchiveAskOpen] = useState(false);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const showToast = useUIStore(s => s.showToast);
@@ -96,6 +81,7 @@ export default function NoteEditorScreen() {
   const [modifiedAt, setModifiedAt] = useState(Date.now());
   const [encrypted, setEncrypted] = useState(0);
   const [importance, setImportance] = useState(0);
+  const [hidden, setHidden] = useState(0);
   const [folderId, setFolderId] = useState(0);
   const [calendarDate, setCalendarDate] = useState(initialDate);
   // Bold, strikethrough and highlight ranges of a text note (see utils/textFormat.js); shared with the Android app.
@@ -228,6 +214,7 @@ export default function NoteEditorScreen() {
         setColorIndex(note.colorIndex || 0);
         setEncrypted(note.encrypted || 0);
         setImportance(note.importance || 0);
+        setHidden(note.hidden ? 1 : 0);
         setFolderId(note.folderId || 0);
         setCalendarDate(note.calendarDate || null);
         setFormat(note.format || '');
@@ -419,17 +406,14 @@ export default function NoteEditorScreen() {
   // Checklist
   const handleItemText  = (idx, text) => setItems(items.map((it, i) => i === idx ? { ...it, text } : it));
   const handleItemCheck = idx => setItems(items.map((it, i) => i === idx ? { ...it, checked: !it.checked } : it));
-  // A new row takes the cursor, so a list can be typed without the mouse.
-  // Enter in a row adds the new one right below it; the Add Item button adds at the end.
-  const addItem = (after = items.length - 1) => {
-    focusItemRef.current = after + 1;
-    setItems([...items.slice(0, after + 1), { text: '', checked: false }, ...items.slice(after + 1)]);
-  };
-  const removeItem = idx => {
-    if (items.length === 1) return;
-    focusItemRef.current = Math.max(0, idx - 1);
-    setItems(items.filter((_, i) => i !== idx));
-  };
+  // A new row takes the cursor, so a list can be typed without the mouse. Enter in a row adds the new
+  // one below it (after its sub-items, for a parent); "Add item" adds at the end of the list, or, under
+  // a parent, at the end of its sub-items (a plus on the parent does the same).
+  const apply = ({ items: next, focus }) => { focusItemRef.current = focus; setItems(next); };
+  const addItem = (after) => apply(after === undefined ? addParentAtEnd(items) : insertAfter(items, after));
+  const addSubItem = (parentIdx) => apply(addChild(items, parentIdx));
+  // The cross removes a row (a parent with its sub-items); the last row is only cleared.
+  const removeItem = idx => apply(removeRow(items, idx));
   useEffect(() => {
     const at = focusItemRef.current;
     if (at === null) return;
@@ -512,7 +496,7 @@ export default function NoteEditorScreen() {
   // What Share and Copy note hand over: the title, a blank line, then the text.
   const shareText = () => {
     const text = type === 'checklist'
-      ? cleanItems(items).map(i => `${i.checked ? '[V]' : '[ ]'} ${i.text}`).join('\n')
+      ? serializeItems(cleanItems(items))
       : body;
     return title ? `${title}\n\n${text}` : text;
   };
@@ -800,29 +784,77 @@ export default function NoteEditorScreen() {
           </>
         ) : (
           <Box sx={{ px: 1, pb: 4 }}>
-            {items.map((item, idx) => (
-              <Box key={idx} sx={{ display: 'flex', alignItems: 'center', minHeight: 48, borderBottom: `1px solid ${ruleColor}` }}>
-                <Checkbox
-                  checked={item.checked} onChange={() => handleItemCheck(idx)} size="small"
-                  sx={{ color: color.border, '&.Mui-checked': { color: color.border }, flexShrink: 0 }}
-                />
-                <TextField
-                  value={item.text} onChange={e => handleItemText(idx, e.target.value)}
-                  inputRef={el => { itemRefs.current[idx] = el; }}
-                  placeholder="Add item" variant="standard" fullWidth
-                  autoFocus={isNew && idx === 0}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing) { e.preventDefault(); addItem(idx); }
-                    if (e.key === 'Backspace' && item.text === '') removeItem(idx);
-                  }}
-                  sx={{
-                    '& input': { fontSize: '0.95rem', color: color.text, textDecoration: item.checked ? 'line-through' : 'none', opacity: item.checked ? 0.5 : 1 },
-                    '& .MuiInput-root:before, & .MuiInput-root:after': { display: 'none' },
-                  }}
-                  InputProps={{ disableUnderline: true }}
-                />
-              </Box>
-            ))}
+            {items.map((item, idx) => {
+              const child = levelOf(item) === 1;
+              const hasChildren = !child && levelOf(items[idx + 1]) === 1;
+              const endsBlock = levelOf(items[idx + 1]) !== 1; // the last row of a parent's sub-items (or a lone parent)
+              const parentIdx = child ? (() => { let p = idx; while (p > 0 && levelOf(items[p]) === 1) p--; return p; })() : idx;
+              const parentHasChildren = levelOf(items[parentIdx + 1]) === 1;
+              return (
+                <React.Fragment key={idx}>
+                  <Box
+                    data-testid={child ? 'sub-item-row' : 'item-row'}
+                    sx={{
+                      display: 'flex', alignItems: 'center', minHeight: 48, borderBottom: `1px solid ${ruleColor}`,
+                      pl: child ? 4 : 0,
+                      // The plus shows when the pointer is over the row; on touch screens (no hover) it is always there.
+                      '& .row-plus': { visibility: 'hidden' },
+                      '&:hover .row-plus, &:focus-within .row-plus': { visibility: 'visible' },
+                      '@media (hover: none)': { '& .row-plus': { visibility: 'visible' } },
+                    }}
+                  >
+                    <Checkbox
+                      checked={item.checked} onChange={() => handleItemCheck(idx)} size="small"
+                      sx={{ color: color.border, '&.Mui-checked': { color: color.border }, flexShrink: 0 }}
+                    />
+                    <TextField
+                      value={item.text} onChange={e => handleItemText(idx, e.target.value)}
+                      inputRef={el => { itemRefs.current[idx] = el; }}
+                      placeholder="Add item" variant="standard" fullWidth multiline
+                      autoFocus={isNew && idx === 0}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); addItem(idx); }
+                        if (e.key === 'Backspace' && item.text === '' && !hasChildren) removeItem(idx);
+                      }}
+                      sx={{
+                        // A long item wraps onto more lines instead of running out of sight.
+                        '& textarea': {
+                          fontSize: '0.95rem', color: color.text, textDecoration: item.checked ? 'line-through' : 'none',
+                          opacity: item.checked ? 0.5 : 1, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',
+                        },
+                        '& .MuiInput-root': { py: 1 },
+                        '& .MuiInput-root:before, & .MuiInput-root:after': { display: 'none' },
+                      }}
+                      InputProps={{ disableUnderline: true }}
+                    />
+                    {!child && (
+                      <IconButton
+                        className="row-plus" size="small" aria-label="Add sub-item" title="Add sub-item"
+                        onClick={() => addSubItem(idx)} sx={{ color: color.text, opacity: 0.7, flexShrink: 0 }}
+                      >
+                        <AddCircleOutlineIcon fontSize="small" />
+                      </IconButton>
+                    )}
+                    <IconButton
+                      size="small" aria-label="Remove item" title="Remove item"
+                      onClick={() => removeItem(idx)} sx={{ color: color.text, opacity: 0.7, flexShrink: 0, mr: 0.5 }}
+                    >
+                      <CloseIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                  {endsBlock && parentHasChildren && (
+                    <Box
+                      data-testid="sub-add-item"
+                      sx={{ display: 'flex', alignItems: 'center', opacity: 0.6, cursor: 'pointer', py: 1, pr: 1, pl: 5, borderBottom: `1px solid ${ruleColor}` }}
+                      onClick={() => addSubItem(parentIdx)}
+                    >
+                      <AddCircleOutlineIcon sx={{ fontSize: 18, mr: 1, color: color.text }} />
+                      <Typography sx={{ fontSize: '0.9rem', color: color.text }}>Add item</Typography>
+                    </Box>
+                  )}
+                </React.Fragment>
+              );
+            })}
             <Box sx={{ display: 'flex', alignItems: 'center', mt: 0.5, opacity: 0.6, cursor: 'pointer', p: 1 }} onClick={() => addItem()}>
               <AddCircleOutlineIcon sx={{ fontSize: 20, mr: 1, color: color.text }} />
               <Typography sx={{ fontSize: '0.95rem', color: color.text }}>Add Item</Typography>
@@ -910,6 +942,16 @@ export default function NoteEditorScreen() {
         {currentIdRef.current && (
           <MenuItem onClick={() => { setMenuAnchor(null); togglePin(currentIdRef.current); setImportance(i => (i ? 0 : 1)); }}>
             <PushPinIcon sx={{ mr: 1.5, fontSize: 20 }} /> {importance ? 'Unpin' : 'Pin'}
+          </MenuItem>
+        )}
+        {currentIdRef.current && (
+          <MenuItem
+            data-testid="menu-hide"
+            onClick={() => { setMenuAnchor(null); setHiddenInStore(currentIdRef.current, !hidden); setHidden(hidden ? 0 : 1); }}
+          >
+            {hidden
+              ? <VisibilityIcon sx={{ mr: 1.5, fontSize: 20 }} />
+              : <VisibilityOffIcon sx={{ mr: 1.5, fontSize: 20 }} />} {hidden ? 'Unhide' : 'Hide'}
           </MenuItem>
         )}
         {currentIdRef.current && (

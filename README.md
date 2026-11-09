@@ -68,6 +68,24 @@ formatting). Two comparisons: "What this edit changed" (against the version befo
 change" (against the note now). Locked notes show no content. The diff is `src/utils/versionDiff.js`; the phone's
 copy is `VersionDiff.kt`, with the same test cases.
 
+## Hidden notes and sub-items (Round 16, both apps)
+
+Click the ColorNote logo in the home top bar to open the Hidden page (`src/screens/HiddenScreen.jsx`, route
+`/hidden`). A note is hidden from its editor menu (Hide / Unhide) or by bulk select on the home list. The
+`hidden` flag is a 0/1 number on the note, always written, and does not change `modifiedAt`. Hidden notes (text,
+checklist and calendar notes) are left out of the home list, all notes, folders, calendar, archive, trash and
+find, unless Settings > Privacy has "Show hidden notes" (lists) or "Search hidden notes" (find) on; both are off
+by default and stored as account settings (`showHiddenNotes`, `searchHiddenNotes`) that the phone reads too.
+The Hidden page asks for the master password each time when one is set; with none set it opens and says how
+to lock it. **The web has no fingerprint**, only the master password.
+
+Checklist items have a level (0 or 1, two levels only): hover a parent row for a plus left of the cross; a child
+row has an "Add item" button. The phone's `items[].level` is the same field. Clicking the sync badge lists the
+changes still waiting to be sent (`src/sync/pendingChanges.js`).
+
+Guesses (listed in the Android repo's `docs/ui-decisions.md`, "Round 16"): archive and trash also hide hidden
+notes; the two-setting design; the Hide icons are Material; reminders still show hidden notes.
+
 ## Firestore reads (Round 15)
 
 The free plan allows 50,000 document reads a day and the diary is ~1,800 notes, so never read the whole

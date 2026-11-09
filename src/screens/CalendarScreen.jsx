@@ -12,7 +12,7 @@ import EventIcon from '@mui/icons-material/Event';
 import CheckBoxIcon from '@mui/icons-material/CheckBox';
 import BottomNav from '../components/layout/BottomNav';
 import DatePickerDialog from '../components/common/DatePickerDialog';
-import { db } from '../db/database';
+import { db, hiddenPrefs, isHidden } from '../db/database';
 import { getColor } from '../utils/colors';
 import { formatCalendarDate } from '../utils/dateUtils';
 import { notesByDate } from '../utils/reminders';
@@ -27,8 +27,11 @@ function getDaysInMonth(year, month) {
 // The notes on each day from `from` to `to`, a repeating reminder on every
 // day it comes round, as on the phone.
 async function loadDays(from, to) {
+  // Hidden notes stay off the calendar too, unless "Show hidden notes" is on.
+  const { showHidden } = await hiddenPrefs();
   const notes = await db.notes
-    .filter(n => Boolean(n.calendarDate) && n.calendarDate <= to && (n.calendarDate >= from || Boolean(n.reminderRepeat)))
+    .filter(n => Boolean(n.calendarDate) && n.calendarDate <= to && (n.calendarDate >= from || Boolean(n.reminderRepeat))
+      && (showHidden || !isHidden(n)))
     .toArray();
   return notesByDate(notes, from, to);
 }
