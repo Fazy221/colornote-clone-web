@@ -72,6 +72,16 @@ describe('hidden notes', () => {
     expect((await searchNotes('garden', { includeHidden: true })).map(x => x.id).sort()).toEqual([1, 2]);
   });
 
+  it('title-only search leaves out notes that match only in their text or list items', async () => {
+    fakeNotes([
+      n(1, { title: 'Garden plan' }),
+      n(2, { title: 'Shopping', note: 'buy a garden hose' }),
+      n(3, { title: 'Chores', type: 'checklist', items: [{ text: 'water the garden', checked: false }] }),
+    ]);
+    expect((await searchNotes('garden')).map(x => x.id).sort()).toEqual([1, 2, 3]);
+    expect((await searchNotes('garden', { titleOnly: true })).map(x => x.id)).toEqual([1]);
+  });
+
   it('reads both switches as off until turned on, from a boolean or the text "true"', async () => {
     const store = {};
     vi.spyOn(db.settings, 'get').mockImplementation(async (k) => (k in store ? { key: k, value: store[k] } : undefined));

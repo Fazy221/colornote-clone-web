@@ -390,10 +390,10 @@ const useNoteStore = create((set, get) => ({
   },
 
   // ─── Search ───────────────────────────────────────────────────────────────
-  searchNotes: async (query) => {
+  searchNotes: async (query, { titleOnly = false } = {}) => {
     const includeLockedContent = await getSetting('searchLockedContent', false);
     const { searchHidden } = await hiddenPrefs();
-    return searchNotes(query, { includeLockedContent, includeHidden: searchHidden });
+    return searchNotes(query, { includeLockedContent, includeHidden: searchHidden, titleOnly });
   },
 }));
 

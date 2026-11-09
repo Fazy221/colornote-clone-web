@@ -109,10 +109,14 @@ export async function searchNotes(query, options = {}) {
   const includeLockedContent = !!options.includeLockedContent;
 
   const includeHidden = !!options.includeHidden;
+  // Title only: the note's text, list items and locked content are not looked at (the Android app's
+  // repo.search(titleOnly) does the same).
+  const titleOnly = !!options.titleOnly;
   const notes = (await db.notes.where('state').equals('normal').toArray()).filter(n => includeHidden || !isHidden(n));
 
   const results = await Promise.all(notes.map(async (n) => {
     if ((n.title || '').toLowerCase().includes(q)) return n;
+    if (titleOnly) return null;
 
     if (n.encrypted === 1) {
       if (!includeLockedContent) return null;

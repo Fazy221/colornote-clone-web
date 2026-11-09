@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useReducer } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams, useLocation } from 'react-router-dom';
 import {
   Box, AppBar, Toolbar, IconButton, TextField,
   Typography, Checkbox, Menu, MenuItem, Divider,
@@ -59,6 +59,8 @@ export default function NoteEditorScreen() {
   const navigate      = useNavigate();
   const { id }        = useParams();
   const [searchParams] = useSearchParams();
+  // Opened from a Search result: the word searched for (see SearchScreen). The note opens in Find on it.
+  const autoFindRef   = useRef(useLocation().state?.find || ''); // used once: a reload after Restore doesn't reopen Find
   const isNew         = id === 'new';
   const initialType   = searchParams.get('type') || 'text';
   const initialDate   = searchParams.get('date')  || null;
@@ -151,7 +153,7 @@ export default function NoteEditorScreen() {
   // The hit in focus is brought into view.
   useEffect(() => {
     contentRef.current?.querySelector('[data-find-current]')?.scrollIntoView({ block: 'center' });
-  }, [findQuery, findIndex, finding]);
+  }, [findQuery, findIndex, finding, loading]);
 
   // Ctrl+F opens the bar on a text note, as on any desktop app.
   useEffect(() => {
@@ -235,6 +237,10 @@ export default function NoteEditorScreen() {
             setItems(note.items?.length ? note.items : [{ text: '', checked: false }]);
           } else {
             setBody(note.note || '');
+            // Only when the word is in the text: a note found by its title alone opens as usual.
+            const word = autoFindRef.current;
+            autoFindRef.current = '';
+            if (word && findOffsets(note.note || '', word).length) { setFindQuery(word); setFindIndex(0); setFinding(true); }
           }
         }
         setLoading(false);
